@@ -47,6 +47,48 @@ among all sesstions."
                  npmjs-common-create-unique-buffer-name)
           function))
 
+(defvar npmjs-json-hash (make-hash-table :test 'equal))
+
+(defun npmjs-get-package-json-path ()
+  "Look up directory hierarchy for directory containing package.json.
+Return absolute path to package.json or nil."
+  (when-let ((project-root (npmjs-get-project-root)))
+    (expand-file-name "package.json"
+                      project-root)))
+(defun npmjs-read-json (file &optional json-type)
+  "Read the JSON object in FILE, return object converted to JSON-TYPE.
+JSON-TYPE must be one of `alist', `plist', or `hash-table'."
+  (require 'json)
+  (condition-case nil
+      (let* ((json-object-type (or json-type 'alist))
+             (cache (gethash (format "%s:%s" file json-object-type)
+                             npmjs-json-hash))
+             (cache-tick (and cache (plist-get cache :tick)))
+             (tick (file-attribute-modification-time (file-attributes
+                                                      file
+                                                      'string)))
+             (content-json))
+        (when (or (null cache)
+                  (not (equal tick cache-tick)))
+          (setq content-json
+                (with-temp-buffer
+                  (insert-file-contents file)
+                  (when (fboundp 'json-read-from-string)
+                    (json-read-from-string
+                     (buffer-substring-no-properties (point-min)
+                                                     (point-max))))))
+          (setq cache (list
+                       :tick tick
+                       :json content-json))
+          (puthash file cache npmjs-json-hash))
+        (plist-get cache :json))
+    (error (message "Could't read %s as json."
+                    file))))
+
+(defun npmjs-common-create-unique-buffer-name (root npm-command)
+  "Create buffer name unique to ROOT and NPM-COMMAND."
+  (concat "*" npm-command " in " root "*"))
+
 (defconst npmjs-nvm-version-re
   "v[0-9]+\.[0-9]+\.[0-9]+"
   "Regex matching a Node version.")
@@ -420,7 +462,6 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   (setq tabulated-list-entries rows))
                 (tabulated-list-print))))))))
 
-
 (defun npmjs-search-package--next-line ()
   "Forward line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
@@ -539,12 +580,429 @@ INITIAL-INPUT can be given as the initial minibuffer input."
       (fido-mode -1)
       (setq npmjs-bmenu-last-search-regexp nil))))
 
+(defun npmjs--menu-mark-delete (&optional _num)
+  "Mark a gist for deletion and move to the next line."
+  (interactive "p")
+  (tabulated-list-put-tag "D" t))
+
+(defun npmjs--menu-mark-upgrade (&optional _num)
+  "Mark a gist for clone and move to the next line."
+  (interactive "p")
+  (tabulated-list-put-tag "U" t))
+
+(defun npmjs--menu-mark-unmark (&optional _num)
+  "Clear any mark on a gist and move to the next line."
+  (interactive "p")
+  (tabulated-list-put-tag " " t))
+
+(defun npmjs--menu-execute ()
+  "Perform marked gist list actions."
+  (interactive)
+  (unless (derived-mode-p 'npmjs-list-mode)
+    (error "The current buffer is not in Jist list mode"))
+  (let (clone-list delete-list cmd gist-id)
+    (save-excursion
+      (goto-char (point-min))
+      (while (not (eobp))
+        (setq cmd (char-after))
+        (unless (eq cmd ?\s)
+          (setq gist-id (tabulated-list-get-id))
+          (cond ((eq cmd ?D)
+                 (push gist-id delete-list))
+                ((eq cmd ?C)
+                 (push gist-id clone-list))))
+        (forward-line)))
+    (unless (or delete-list clone-list)
+      (user-error "No operations specified"))))
+
+(defvar npmjs-list-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map tabulated-list-mode-map)
+    (define-key map "D" 'npmjs--menu-mark-delete)
+    (define-key map "m" 'npmjs--menu-mark-upgrade)
+    (define-key map "u" 'npmjs--menu-mark-unmark)
+    map))
+
+(define-derived-mode npmjs-list-mode tabulated-list-mode
+  "Show report gathered about unused definitions."
+  (setq-local tabulated-list-format
+              [("Name" 40 nil)
+               ("Version" 10 nil)
+               ("Description" 33 nil)])
+  (setq tabulated-list-padding 2)
+  (tabulated-list-init-header))
+
+
+(defun npmjs-global-packages ()
+  "Return list of globally installed packages."
+  (require 'json nil t)
+  (if (fboundp 'json-read-from-string)
+      (json-read-from-string (with-temp-buffer
+                               (shell-command
+                                "npm ls --global --json"
+                                (current-buffer))
+                               (let ((output (string-trim
+                                              (buffer-string))))
+                                 (unless (string-empty-p output)
+                                   (string-trim (buffer-string))))))
+    '()))
+
+(defun npmjs-read-local-packages ()
+  "Read globally installed js packages."
+  (let* ((default-directory
+          (expand-file-name (or
+                             (npmjs-get-project-root)
+                             (vc-root-dir)
+                             default-directory)))
+         (process-environment (or (npmjs-get-node-env) process-environment))
+         (alist (npmjs-local-packages))
+         (prompt (format "Globally intstalled packages (%s): "
+                         (string-trim (shell-command-to-string
+                                       "node -v"))))
+         (annotf (lambda (it)
+                   (let ((value (cdr-safe (assoc it alist))))
+                     (concat "@" (if (listp value)
+                                     (string-join value " ")
+                                   (or value "")))))))
+    (completing-read prompt
+                     (lambda (str pred action)
+                       (if (eq action 'metadata)
+                           `(metadata
+                             (annotation-function . ,annotf))
+                         (complete-with-action action alist
+                                               str pred))))))
+
+(defun npmjs-local-packages ()
+  "Return list of globally installed packages."
+  (require 'json nil t)
+  (if-let* ((package-json-file (npmjs-get-package-json-path))
+            (package-json (ignore-errors (npmjs-read-json package-json-file
+                                                          'alist))))
+      (npmjs-pluck-depenencies package-json)
+    '()))
+
+(defun npmjs-alist-to-entries (alist)
+  "Transfrom ALIST to tabulated entries."
+  (mapcar (lambda (a)
+            (let ((row
+                   (cond ((consp (car-safe a))
+                          (mapcar (lambda (it)
+                                    (or it ""))
+                                  (npmjs--alist-props
+                                   '(name version
+                                          description)
+                                   a)))
+                         (t (or (pcase-let ((`(,name ,version ,type) a))
+                                  (mapcar 'km-s-strip-props
+                                          (list name version (or type ""))))
+                                (pcase-let ((`(,name ,version) a))
+                                  (mapcar 'km-s-strip-props (list name
+                                                                  version
+                                                                  ""))))))))
+              (list (car row)
+                    (apply 'vector row))))
+          alist))
+(defun npmjs-list-render (buff-name entries)
+  "Render ENTRIES in buffer BUFF-NAME."
+  (with-current-buffer (get-buffer-create (format buff-name
+                                                  default-directory))
+    (unless (eq major-mode 'npmjs-list-mode)
+      (npmjs-list-mode))
+    (setq tabulated-list-entries entries)
+    (tabulated-list-print)
+    (unless (get-buffer-window (current-buffer))
+      (pop-to-buffer (current-buffer)))))
+
+(defun npmjs-list-global-packages ()
+  "Read globally installed js packages."
+  (let* ((default-directory
+          (expand-file-name (or
+                             (npmjs-get-project-root)
+                             (vc-root-dir)
+                             default-directory)))
+         (process-environment (or (npmjs-get-node-env) process-environment))
+         (alist (npmjs-pluck-depenencies (npmjs-global-packages)))
+         (buff-name (format "Globally intstalled packages (%s): "
+                            (string-trim (shell-command-to-string
+                                          "node -v"))))
+         (entries (npmjs-alist-to-entries alist)))
+    (npmjs-list-render buff-name entries)))
+
+(defun npmjs-list-local-packages ()
+  "Read globally installed js packages."
+  (let* ((default-directory
+          (expand-file-name (or
+                             (npmjs-get-project-root)
+                             (vc-root-dir)
+                             default-directory)))
+         (process-environment (or (npmjs-get-node-env) process-environment))
+         (alist (npmjs-pluck-depenencies (npmjs-local-packages)))
+         (buff-name (format "Locally intstalled packages (%s): "
+                            (string-trim (shell-command-to-string
+                                          "node -v"))))
+         (entries (npmjs-alist-to-entries alist)))
+    (npmjs-list-render buff-name entries)))
+
+
+
 (defun npmjs-read-global-packages ()
   "Read globally installed js packages."
-  ()
-  )
+  (let* ((default-directory
+          (expand-file-name (or
+                             (npmjs-get-project-root)
+                             (vc-root-dir)
+                             default-directory)))
+         (process-environment (or (npmjs-get-node-env) process-environment))
+         (alist (npmjs-pluck-depenencies (npmjs-global-packages)))
+         (prompt (format "Globally intstalled packages (%s): "
+                         (string-trim (shell-command-to-string
+                                       "node -v"))))
+         (annotf (lambda (it)
+                   (let ((value (cdr-safe (assoc it alist))))
+                     (concat "@" (if (listp value)
+                                     (string-join value "")
+                                   (or value "")))))))
+    (completing-read prompt
+                     (lambda (str pred action)
+                       (if (eq action 'metadata)
+                           `(metadata
+                             (annotation-function . ,annotf))
+                         (complete-with-action action alist
+                                               str pred))))))
+(defun npmjs-s-strip-props (item)
+  "If ITEM is string, return it without text properties.
+
+ If ITEM is symbol, return it is `symbol-name.'
+ Otherwise return nil."
+  (cond ((stringp item)
+         (let ((str (seq-copy item)))
+           (set-text-properties 0 (length str) nil str)
+           str))
+        ((and item (symbolp item))
+         (symbol-name item))
+        (nil item)))
+
+(defun npmjs-pluck-depenencies (package-json-alist)
+  "Completion table with current PACKAGE-JSON-ALIST dependencies."
+  (seq-reduce (lambda (acc it)
+                (if-let ((deps (when-let ((found
+                                           (alist-get it package-json-alist)))
+                                 (mapcar (lambda (cell)
+                                           (let* ((symb (car cell))
+                                                  (value (cdr cell))
+                                                  (version
+                                                   (if (stringp value)
+                                                       value
+                                                     (cdr-safe (assoc 'version
+                                                                      value))))
+                                                  (type (pcase it
+                                                          ('devDependencies
+                                                           "dev")
+                                                          ('peerDependencies
+                                                           "peer")
+                                                          ('optionalDependencies
+                                                           "optional"))))
+                                             (remove nil
+                                                     (list (npmjs-s-strip-props
+                                                            (if (stringp
+                                                                 symb)
+                                                                symb
+                                                              (symbol-name
+                                                               symb)))
+                                                           version
+                                                           type))))
+                                         found))))
+                    (setq acc (append acc deps)))
+                acc)
+              '(optionalDependencies
+                peerDependencies
+                devDependencies
+                dependencies)
+              '()))
+(defun npmjs-get-package-info (package)
+  "Exec \"npm info\" for PACKAGE and return list of available versions."
+  (require 'json)
+  (when (fboundp 'json-read-from-string)
+    (json-read-from-string
+     (string-trim
+      (shell-command-to-string
+       (string-join
+        `("npm info"
+          ,package
+          "--json")
+        " "))))))
+
+(defun npmjs-get-package-versions (package)
+  "Exec \"yarn info\" for PACKAGE and return list of available versions."
+  (require 'json)
+  (let ((data (npmjs-get-package-info package)))
+    (append
+     (mapcar 'cdr (alist-get 'dist-tags data))
+     (reverse
+      (append
+       (alist-get 'versions
+                  data)
+       nil)))))
+
+(defun npmjs-confirm-package-version (package &optional prompt)
+  "Confirm PACKAGE version with PROMPT."
+  (let ((version))
+    (unless (string-match-p "[a-z-]+@" package)
+      (when-let ((versions (seq-reduce
+                            (lambda (acc it)
+                              (let ((prefixes '("^" ">="))
+                                    (l `(,it)))
+                                (dolist (prefix prefixes)
+                                  (push (format "%s%s" prefix it) l))
+                                (setq acc (append acc l))))
+                            (npmjs-get-package-versions package)
+                            '())))
+        (setq version
+              (completing-read
+               (or prompt (format "%s " package))
+               (push "latest" versions)))))
+    (if version
+        (format "%s@%s" package version)
+      package)))
+
 
 ;; transient
+
+;;;###autoload
+(defun npmjs-done ()
+  "Execute npm transient command."
+  (interactive)
+  (when transient-current-command
+    (let* ((formatted-args (npmjs-format-transient-args))
+           (cmd (pcase transient-current-command
+                  ('npmjs-get "npm get")
+                  ('npmjs-whoami "npm whoami")
+                  ('npmjs-version "npm version")
+                  ('npmjs-view "npm view")
+                  ('npmjs-update
+                   (let ((package
+                          (if
+                              (transient-arg-value
+                               "--global"
+                               (transient-args
+                                transient-current-command))
+                              (npmjs-read-global-packages)
+                            (npmjs-read-local-packages))))
+                     (concat "npm update " (or (npmjs-confirm-package-version
+                                                package)
+                                               package))))
+                  ('npmjs-unpublish "npm unpublish")
+                  ('npmjs-unstar "npm unstar")
+                  ('npmjs-token "npm token")
+                  ('npmjs-team "npm team")
+                  ('npmjs-test "npm test")
+                  ('npmjs-stop "npm stop")
+                  ('npmjs-star "npm star")
+                  ('npmjs-stars "npm stars")
+                  ('npmjs-start "npm start")
+                  ('npmjs-shrinkwrap "npm shrinkwrap")
+                  ('npmjs-set "npm set")
+                  ('npmjs-search "npm search")
+                  ('npmjs-root "npm root")
+                  ('npmjs-run-script (list "npm run-script"
+                                           (let* ((alist
+                                                   (when-let* ((package-json-path
+                                                                (npmjs-get-package-json-path))
+                                                               (package-json
+                                                                (npmjs-read-json
+                                                                 package-json-path
+                                                                 'alist)))
+                                                     (alist-get
+                                                      'scripts
+                                                      package-json)))
+                                                  (annotf
+                                                   (lambda (it)
+                                                     (concat ": "
+                                                             (cdr
+                                                              (assoc
+                                                               (intern
+                                                                it)
+                                                               alist))))))
+                                             (completing-read "Script: "
+                                                              (lambda (str pred
+                                                                      action)
+                                                                (if
+                                                                    (eq action
+                                                                        'metadata)
+                                                                    `(metadata
+                                                                      (annotation-function
+                                                                       . ,annotf))
+                                                                  (complete-with-action
+                                                                   action alist
+                                                                   str
+                                                                   pred)))))))
+                  ('npmjs-rebuild "npm rebuild")
+                  ('npmjs-repo "npm repo")
+                  ('npmjs-restart "npm restart")
+                  ('npmjs-uninstall
+                   (string-join (list "npm uninstall"
+                                      (let ((package
+                                             (if
+                                                 (transient-arg-value
+                                                  "--global"
+                                                  (transient-args
+                                                   transient-current-command))
+                                                 (npmjs-read-global-packages)
+                                               (npmjs-read-local-packages))))
+                                        package))
+                                "\s"))
+                  ('npmjs-pack "npm pack")
+                  ('npmjs-ping "npm ping")
+                  ('npmjs-pkg "npm pkg")
+                  ('npmjs-publish "npm publish")
+                  ('npmjs-prefix "npm prefix")
+                  ('npmjs-profile "npm profile")
+                  ('npmjs-prune "npm prune")
+                  ('npmjs-org "npm org")
+                  ('npmjs-outdated "npm outdated")
+                  ('npmjs-owner "npm owner")
+                  ('npmjs-link "npm link")
+                  ('npmjs-ll "npm ll")
+                  ('npmjs-ls "npm ls")
+                  ('npmjs-login "npm login")
+                  ('npmjs-logout "npm logout")
+                  ('npmjs-install-test "npm install-test")
+                  ('npmjs-install "npm install")
+                  ('npmjs-init "npm init")
+                  ('npmjs-help "npm help")
+                  ('npmjs-hook "npm hook")
+                  ('npmjs-find-dupes "npm find-dupes")
+                  ('npmjs-fund "npm fund")
+                  ('npmjs-explain "npm explain")
+                  ('npmjs-explore "npm explore")
+                  ('npmjs-exec "npm exec")
+                  ('npmjs-edit "npm edit")
+                  ('npmjs-docs "npm docs")
+                  ('npmjs-doctor "npm doctor")
+                  ('npmjs-diff "npm diff")
+                  ('npmjs-dist-tag "npm dist-tag")
+                  ('npmjs-dedupe "npm dedupe")
+                  ('npmjs-deprecate "npm deprecate")
+                  ('npmjs-config "npm config")
+                  ('npmjs-cache "npm cache")
+                  ('npmjs-ci "npm ci")
+                  ('npmjs-bin "npm bin")
+                  ('npmjs-bugs "npm bugs")
+                  ('npmjs-access "npm access")
+                  ('npmjs-adduser "npm adduser")
+                  ('npmjs-audit "npm audit")))
+           (full-cmd (string-trim (string-join
+                                   (remove nil
+                                           (flatten-list
+                                            (list cmd
+                                                  formatted-args)))
+                                   "\s"))))
+      (let ((default-directory (expand-file-name (or
+                                                  (npmjs-get-project-root)
+                                                  (vc-root-dir)
+                                                  default-directory))))
+        (npmjs-compile (read-string "Run: " full-cmd))))))
+
 (transient-define-argument npmjs-audit--audit-level ()
   "Set argument --audit-level."
   :class 'transient-switches
@@ -555,22 +1013,22 @@ INITIAL-INPUT can be given as the initial minibuffer input."
 
 (transient-define-argument npmjs--omit-option ()
   "Set argument --omit."
-  :class 'transient-switches
-  :description "omit"
-  :argument-format "--omit %s"
-  :argument-regexp "dev\\|optional\\|peer"
+  :class 'transient-option
+  :argument "--omit "
+  :description "Omit"
+  :multi-value 'repeat
   :choices '("dev" "optional" "peer"))
 
 (transient-define-argument npmjs--workspace-option ()
   "Set argument --workspace."
-  :description "Workspace "
+  :description "Set workspace "
   :argument "--workspace "
   :multi-value 'repeat
   :class 'transient-option)
 
 (transient-define-argument npmjs--registry-option ()
   "Set argument --registry."
-  :description "--registry "
+  :description "Registry "
   :argument "--registry "
   :class 'transient-option)
 
@@ -631,40 +1089,8 @@ Run \"npm help audit\" for more info"
    ("F" "force" "--force")
    ("d" "dry-run" "--dry-run")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm audit")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm audit")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-audit-suffix)])
 
 (transient-define-argument npmjs-adduser--auth-type ()
@@ -724,40 +1150,8 @@ Run \"npm help adduser\" for more info"
    ("s" npmjs-adduser--scope)
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm adduser")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm adduser")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-adduser-suffix)])
 
 (transient-define-argument npmjs-access-type-options ()
@@ -820,40 +1214,8 @@ Run \"npm help access\" for more info"
    ("a" npmjs-access-type-options)
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm access")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm access")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-access-suffix)])
 
 (transient-define-argument npmjs-bugs--browser ()
@@ -906,40 +1268,8 @@ Run \"npm help bugs\" for more info"
    ("s" "workspaces" "--workspaces")
    ("n" "no-browser" "--no-browser")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm bugs")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm bugs")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-bugs-suffix)])
 
 (transient-define-suffix npmjs-bin-suffix ()
@@ -973,43 +1303,14 @@ Options:
 [-g|--global]
 
 Run \"npm help bin\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Switches"
    ("g" "global" "--global")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm bin")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm bin")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-bin-suffix)])
 
 (transient-define-argument npmjs-ci--script-shell ()
@@ -1059,40 +1360,8 @@ Run \"npm help ci\" for more info"
    ("f" "foreground-scripts" "--foreground-scripts")
    ("n" "no-audit" "--no-audit")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ci")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ci")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-ci-suffix)])
 
 (transient-define-argument npmjs-cache--cache ()
@@ -1149,40 +1418,8 @@ Run \"npm help cache\" for more info"
    ("c" npmjs-cache--cache)
    ("s" npmjs-cache-options)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm cache")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm cache")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-cache-suffix)])
 
 (transient-define-argument npmjs-config--editor ()
@@ -1244,7 +1481,9 @@ Options:
 alias: c
 
 Run \"npm help config\" for more info"
-  :value '("list")
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "list" "--global")))
   ["Arguments"
    ("c" "action" npmjs-config-argument)
    ("L" npmjs-config--location)
@@ -1255,40 +1494,8 @@ Run \"npm help config\" for more info"
    ("g" "global" "--global")
    ("s" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm config")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm config")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-config-suffix)])
 
 (transient-define-suffix npmjs-completion-suffix ()
@@ -1319,40 +1526,8 @@ npm completion
 
 Run \"npm help completion\" for more info"
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm completion")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm completion")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-completion-suffix)])
 
 (transient-define-suffix npmjs-deprecate-suffix ()
@@ -1389,40 +1564,8 @@ Run \"npm help deprecate\" for more info"
    ("o" npmjs--otp-option)
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm deprecate")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm deprecate")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-deprecate-suffix)])
 
 (transient-define-suffix npmjs-dedupe-suffix ()
@@ -1478,40 +1621,8 @@ Run \"npm help dedupe\" for more info"
    ("l" "legacy-bundling" "--legacy-bundling")
    ("y" "global-style" "--global-style")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm dedupe")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm dedupe")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-dedupe-suffix)])
 
 (transient-define-suffix npmjs-dist-tag-suffix ()
@@ -1555,40 +1666,8 @@ Run \"npm help dist-tag\" for more info"
    ("i" "include-workspace-root" "--include-workspace-root")
    ("s" "workspaces" "--workspaces")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm dist-tag")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm dist-tag")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-dist-tag-suffix)])
 
 (transient-define-argument npmjs-diff--tag ()
@@ -1663,6 +1742,9 @@ Options:
 [-ws|--workspaces] [--include-workspace-root]
 
 Run \"npm help diff\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("t" npmjs-diff--tag)
@@ -1679,40 +1761,8 @@ Run \"npm help diff\" for more info"
    ("a" "diff-ignore-all-space" "--diff-ignore-all-space")
    ("o" "diff-name-only" "--diff-name-only")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm diff")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm diff")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-diff-suffix)])
 
 (transient-define-suffix npmjs-doctor-suffix ()
@@ -1748,40 +1798,8 @@ Run \"npm help doctor\" for more info"
   ["Arguments"
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm doctor")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm doctor")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-doctor-suffix)])
 
 (transient-define-argument npmjs-docs--browser ()
@@ -1834,40 +1852,8 @@ Run \"npm help docs\" for more info"
    ("s" "workspaces" "--workspaces")
    ("n" "no-browser" "--no-browser")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm docs")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm docs")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-docs-suffix)])
 
 (transient-define-argument npmjs-edit--editor ()
@@ -1910,40 +1896,8 @@ Run \"npm help edit\" for more info"
   ["Arguments"
    ("e" npmjs-edit--editor)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm edit")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm edit")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-edit-suffix)])
 
 (transient-define-argument npmjs-exec--call ()
@@ -2006,40 +1960,8 @@ Run \"npm help exec\" for more info"
    ("i" "include-workspace-root" "--include-workspace-root")
    ("s" "workspaces" "--workspaces")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm exec")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm exec")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-exec-suffix)])
 
 (transient-define-argument npmjs-explore--shell ()
@@ -2082,40 +2004,8 @@ Run \"npm help explore\" for more info"
   ["Arguments"
    ("s" npmjs-explore--shell)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm explore")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm explore")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-explore-suffix)])
 
 (transient-define-suffix npmjs-explain-suffix ()
@@ -2155,40 +2045,8 @@ Run \"npm help explain\" for more info"
   ["Switches"
    ("j" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm explain")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm explain")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-explain-suffix)])
 
 (transient-define-argument npmjs-fund--which ()
@@ -2246,40 +2104,8 @@ Run \"npm help fund\" for more info"
    ("o" "no-browser" "--no-browser")
    ("j" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm fund")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm fund")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-fund-suffix)])
 
 (transient-define-suffix npmjs-find-dupes-suffix ()
@@ -2332,40 +2158,8 @@ Run \"npm help find-dupes\" for more info"
    ("l" "legacy-bundling" "--legacy-bundling")
    ("t" "global-style" "--global-style")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm find-dupes")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm find-dupes")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-find-dupes-suffix)])
 
 (transient-define-suffix npmjs-hook-suffix ()
@@ -2407,40 +2201,8 @@ Run \"npm help hook\" for more info"
   ["Switches"
    ("t" "type" "--type")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm hook")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm hook")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-hook-suffix)])
 
 (transient-define-argument npmjs-help--viewer ()
@@ -2485,40 +2247,8 @@ Run \"npm help help\" for more info"
   ["Arguments"
    ("v" npmjs-help--viewer)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm help")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm help")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-help-suffix)])
 
 (transient-define-argument npmjs-init--scope ()
@@ -2574,40 +2304,8 @@ Run \"npm help init\" for more info"
    ("f" "force" "--force")
    ("y" "yes" "--yes")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm init")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm init")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-init-suffix)])
 
 (transient-define-suffix npmjs-install-test-suffix ()
@@ -2650,6 +2348,9 @@ Options:
 alias: it
 
 Run \"npm help install-test\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("o" npmjs--omit-option)]
@@ -2677,40 +2378,8 @@ Run \"npm help install-test\" for more info"
    ("N" "no-save" "--no-save")
    ("c" "save" "--save")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm install-test")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm install-test")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-install-test-suffix)])
 
 (transient-define-argument npmjs-install--script-shell ()
@@ -2740,6 +2409,7 @@ Run \"npm help install-test\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
 (transient-define-prefix npmjs-install ()
   "Install a package.
@@ -2772,6 +2442,9 @@ Options:
 alias: cit
 
 Run \"npm help install-ci-test\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("o" npmjs--omit-option)
@@ -2803,40 +2476,8 @@ Run \"npm help install-ci-test\" for more info"
    ("u" "foreground-scripts" "--foreground-scripts")
    ("O" "no-audit" "--no-audit")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm install")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm install")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-install-suffix)])
 
 (transient-define-argument npmjs-logout--scope ()
@@ -2880,47 +2521,18 @@ Run \"npm help logout\" for more info"
    ("s" npmjs-logout--scope)
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm logout")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm logout")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-logout-suffix)])
 
 (transient-define-argument npmjs-login--auth-type ()
   "Set argument --auth-type."
-  :description "--auth-type "
+  :description "Auth type"
   :argument "--auth-type "
-  :class 'transient-option
+  :argument-format "--auth-type %s"
+  :argument-regexp "legacy\\|web\\|sso\\|saml\\|oauth\\|webauthn"
+  :choices '("legacy" "web" "sso" "saml" "oauth" "webauthn")
+  :class 'transient-switches
   :always-read t)
 
 (transient-define-argument npmjs-login--scope ()
@@ -2968,40 +2580,8 @@ Run \"npm help adduser\" for more info"
    ("s" npmjs-login--scope)
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm login")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm login")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-login-suffix)])
 
 (transient-define-argument npmjs-ls--depth ()
@@ -3047,6 +2627,9 @@ Options:
 alias: list
 
 Run \"npm help ls\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("o" npmjs--omit-option)
@@ -3064,40 +2647,8 @@ Run \"npm help ls\" for more info"
    ("j" "json" "--json")
    ("a" "all" "--all")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ls")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ls")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-ls-suffix)])
 
 (transient-define-argument npmjs-ll--depth ()
@@ -3143,6 +2694,9 @@ Options:
 alias: la
 
 Run \"npm help ll\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("-" npmjs--workspace-option)
@@ -3162,40 +2716,8 @@ Run \"npm help ll\" for more info"
    ("j" "json" "--json")
    ("a" "all" "--all")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ll")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ll")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-ll-suffix)])
 
 (transient-define-suffix npmjs-link-suffix ()
@@ -3237,6 +2759,9 @@ Options:
 alias: ln
 
 Run \"npm help link\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("-" npmjs--workspace-option)
@@ -3265,40 +2790,8 @@ Run \"npm help link\" for more info"
    ("N" "no-save" "--no-save")
    ("c" "save" "--save")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm link")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm link")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-link-suffix)])
 
 (transient-define-suffix npmjs-owner-suffix ()
@@ -3345,40 +2838,8 @@ Run \"npm help owner\" for more info"
   ["Switches"
    ("s" "workspaces" "--workspaces")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm owner")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm owner")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-owner-suffix)])
 
 (transient-define-suffix npmjs-outdated-suffix ()
@@ -3412,6 +2873,9 @@ Options:
 [-w|--workspace <workspace-name> [-w|--workspace <workspace-name> ...]]
 
 Run \"npm help outdated\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("-" npmjs--workspace-option)]
@@ -3422,40 +2886,8 @@ Run \"npm help outdated\" for more info"
    ("j" "json" "--json")
    ("a" "all" "--all")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm outdated")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm outdated")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-outdated-suffix)])
 
 (transient-define-suffix npmjs-org-suffix ()
@@ -3499,40 +2931,8 @@ Run \"npm help org\" for more info"
    ("p" "parseable" "--parseable")
    ("j" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm org")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm org")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-org-suffix)])
 
 (transient-define-suffix npmjs-prune-suffix ()
@@ -3580,40 +2980,8 @@ Run \"npm help prune\" for more info"
    ("j" "json" "--json")
    ("d" "dry-run" "--dry-run")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm prune")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm prune")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-prune-suffix)])
 
 (transient-define-suffix npmjs-profile-suffix ()
@@ -3656,40 +3024,8 @@ Run \"npm help profile\" for more info"
    ("p" "parseable" "--parseable")
    ("j" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm profile")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm profile")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-profile-suffix)])
 
 (transient-define-suffix npmjs-prefix-suffix ()
@@ -3722,43 +3058,14 @@ Options:
 [-g|--global]
 
 Run \"npm help prefix\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Switches"
    ("g" "global" "--global")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm prefix")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm prefix")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-prefix-suffix)])
 
 (transient-define-argument npmjs-publish--access ()
@@ -3818,40 +3125,8 @@ Run \"npm help publish\" for more info"
    ("s" "workspaces" "--workspaces")
    ("d" "dry-run" "--dry-run")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm publish")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm publish")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-publish-suffix)])
 
 (transient-define-suffix npmjs-pkg-suffix ()
@@ -3898,40 +3173,8 @@ Run \"npm help pkg\" for more info"
    ("j" "json" "--json")
    ("f" "force" "--force")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm pkg")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm pkg")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-pkg-suffix)])
 
 (transient-define-suffix npmjs-ping-suffix ()
@@ -3967,40 +3210,8 @@ Run \"npm help ping\" for more info"
   ["Arguments"
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ping")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm ping")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-ping-suffix)])
 
 (transient-define-argument npmjs-pack--pack-destination ()
@@ -4052,40 +3263,8 @@ Run \"npm help pack\" for more info"
    ("j" "json" "--json")
    ("d" "dry-run" "--dry-run")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm pack")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm pack")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-pack-suffix)])
 
 (transient-define-argument npmjs-restart--script-shell ()
@@ -4130,40 +3309,8 @@ Run \"npm help restart\" for more info"
   ["Switches"
    ("i" "ignore-scripts" "--ignore-scripts")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm restart")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm restart")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-restart-suffix)])
 
 (transient-define-argument npmjs-repo--browser ()
@@ -4215,40 +3362,8 @@ Run \"npm help repo\" for more info"
    ("s" "workspaces" "--workspaces")
    ("n" "no-browser" "--no-browser")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm repo")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm repo")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-repo-suffix)])
 
 (transient-define-suffix npmjs-rebuild-suffix ()
@@ -4285,9 +3400,11 @@ Options:
 alias: rb
 
 Run \"npm help rebuild\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
-   ("w" npmjs--workspace-option)
-   ("-" npmjs--workspace-option)]
+   ("w" npmjs--workspace-option)]
   ["Switches"
    ("i" "install-links" "--install-links")
    ("r" "include-workspace-root" "--include-workspace-root")
@@ -4297,40 +3414,8 @@ Run \"npm help rebuild\" for more info"
    ("n" "no-bin-links" "--no-bin-links")
    ("G" "global" "--global")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm rebuild")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm rebuild")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-rebuild-suffix)])
 
 (transient-define-argument npmjs-run-script--script-shell ()
@@ -4383,8 +3468,7 @@ aliases: run, rum, urn
 Run \"npm help run-script\" for more info"
   ["Arguments"
    ("s" npmjs-run-script--script-shell)
-   ("w" npmjs-run-script--workspace)
-   ("-" npmjs-run-script--workspace)]
+   ("w" npmjs-run-script--workspace)]
   ["Switches"
    ("f" "foreground-scripts" "--foreground-scripts")
    ("i" "ignore-scripts" "--ignore-scripts")
@@ -4392,40 +3476,8 @@ Run \"npm help run-script\" for more info"
    ("r" "include-workspace-root" "--include-workspace-root")
    ("W" "workspaces" "--workspaces")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm run-script")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm run-script")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-run-script-suffix)])
 
 (transient-define-suffix npmjs-root-suffix ()
@@ -4461,40 +3513,8 @@ Run \"npm help root\" for more info"
   ["Switches"
    ("g" "global" "--global")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm root")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm root")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-root-suffix)])
 
 (transient-define-argument npmjs-search--searchexclude ()
@@ -4561,40 +3581,8 @@ Run \"npm help search\" for more info"
    ("j" "json" "--json")
    ("L" "long" "--long")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm search")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm search")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-search-suffix)])
 
 (transient-define-argument npmjs-set-script--workspace ()
@@ -4642,40 +3630,8 @@ Run \"npm help set-script\" for more info"
    ("i" "include-workspace-root" "--include-workspace-root")
    ("s" "workspaces" "--workspaces")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm set-script")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm set-script")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-set-script-suffix)])
 
 (transient-define-suffix npmjs-set-suffix ()
@@ -4706,40 +3662,8 @@ npm set <key>=<value> [<key>=<value> ...] (See `npm config`)
 
 Run \"npm help set\" for more info"
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm set")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm set")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-set-suffix)])
 
 (transient-define-suffix npmjs-shrinkwrap-suffix ()
@@ -4770,40 +3694,8 @@ npm shrinkwrap
 
 Run \"npm help shrinkwrap\" for more info"
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm shrinkwrap")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm shrinkwrap")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-shrinkwrap-suffix)])
 
 (transient-define-argument npmjs-start--script-shell ()
@@ -4848,40 +3740,8 @@ Run \"npm help start\" for more info"
   ["Switches"
    ("i" "ignore-scripts" "--ignore-scripts")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm start")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm start")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-start-suffix)])
 
 (transient-define-suffix npmjs-stars-suffix ()
@@ -4917,40 +3777,8 @@ Run \"npm help stars\" for more info"
   ["Arguments"
    ("r" npmjs--registry-option)]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm stars")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm stars")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-stars-suffix)])
 
 (transient-define-suffix npmjs-star-suffix ()
@@ -4989,40 +3817,8 @@ Run \"npm help star\" for more info"
   ["Switches"
    ("n" "no-unicode" "--no-unicode")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm star")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm star")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-star-suffix)])
 
 (transient-define-argument npmjs-stop--script-shell ()
@@ -5067,40 +3863,8 @@ Run \"npm help stop\" for more info"
   ["Switches"
    ("i" "ignore-scripts" "--ignore-scripts")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm stop")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm stop")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-stop-suffix)])
 
 (transient-define-argument npmjs-test--script-shell ()
@@ -5147,40 +3911,8 @@ Run \"npm help test\" for more info"
   ["Switches"
    ("i" "ignore-scripts" "--ignore-scripts")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm test")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm test")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-test-suffix)])
 
 (transient-define-suffix npmjs-team-suffix ()
@@ -5228,40 +3960,8 @@ Run \"npm help team\" for more info"
    ("j" "json" "--json")
    ("-" "parseable" "--parseable")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm team")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm team")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-team-suffix)])
 
 (transient-define-argument npmjs-token--cidr ()
@@ -5307,47 +4007,13 @@ Run \"npm help token\" for more info"
   ["Arguments"
    ("o" npmjs--otp-option)
    ("r" npmjs--registry-option)
-   ("c" npmjs-token--cidr)
-   ("i" npmjs-token--cidr)]
+   ("c" npmjs-token--cidr)]
   ["Switches"
    ("d" "cidr" "--cidr")
-   ("e" "read-only" "--read-only")
-   ("a" "read-only" "--read-only")]
+   ("e" "read-only" "--read-only")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm token")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm token")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-token-suffix)])
 
 (transient-define-suffix npmjs-unstar-suffix ()
@@ -5386,40 +4052,8 @@ Run \"npm help unstar\" for more info"
   ["Switches"
    ("n" "no-unicode" "--no-unicode")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm unstar")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm unstar")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-unstar-suffix)])
 
 (transient-define-suffix npmjs-unpublish-suffix ()
@@ -5461,40 +4095,8 @@ Run \"npm help unpublish\" for more info"
    ("f" "force" "--force")
    ("d" "dry-run" "--dry-run")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm unpublish")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm unpublish")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-unpublish-suffix)])
 
 (transient-define-suffix npmjs-uninstall-suffix ()
@@ -5532,6 +4134,9 @@ Options:
 aliases: unlink, remove, rm, r, un
 
 Run \"npm help uninstall\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)]
   ["Switches"
@@ -5542,44 +4147,12 @@ Run \"npm help uninstall\" for more info"
    ("p" "save-peer" "--save-peer")
    ("o" "save-optional" "--save-optional")
    ("d" "save-dev" "--save-dev")
-   ("a" "save-prod" "--save-prod")
+   ("P" "save-prod" "--save-prod")
    ("n" "no-save" "--no-save")
    ("S" "save" "--save")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm uninstall")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm uninstall")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-uninstall-suffix)])
 
 (transient-define-suffix npmjs-update-suffix ()
@@ -5621,66 +4194,37 @@ Options:
 aliases: up, upgrade, udpate
 
 Run \"npm help update\" for more info"
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("o" npmjs--omit-option)]
   ["Switches"
-   (("c" "save" "--save")
-    ("N" "no-save" "--no-save")
-    ("V" "save-prod" "--save-prod")
-    ("A" "save-dev" "--save-dev")
-    ("S" "save-optional" "--save-optional")
-    ("e" "save-peer" "--save-peer")
-    ("v" "save-bundle" "--save-bundle")
-    ("G" "global" "--global")
-    ("y" "global-style" "--global-style")
-    ("l" "legacy-bundling" "--legacy-bundling")
-    ("t" "strict-peer-deps" "--strict-peer-deps")
-    ("p" "no-package-lock" "--no-package-lock")
-    ("f" "foreground-scripts" "--foreground-scripts")
-    ("g" "ignore-scripts" "--ignore-scripts")
-    ("a" "no-audit" "--no-audit")
-    ("b" "no-bin-links" "--no-bin-links")
-    ("n" "no-fund" "--no-fund")
-    ("d" "dry-run" "--dry-run")
-    ("s" "workspaces" "--workspaces")
-    ("r" "include-workspace-root" "--include-workspace-root")
-    ("i" "install-links" "--install-links"))]
+   ("c" "save" "--save")
+   ("N" "no-save" "--no-save")
+   ("V" "save-prod" "--save-prod")
+   ("A" "save-dev" "--save-dev")
+   ("S" "save-optional" "--save-optional")
+   ("e" "save-peer" "--save-peer")
+   ("v" "save-bundle" "--save-bundle")
+   ("G" "global" "--global")
+   ("y" "global-style" "--global-style")
+   ("l" "legacy-bundling" "--legacy-bundling")
+   ("t" "strict-peer-deps" "--strict-peer-deps")
+   ("p" "no-package-lock" "--no-package-lock")
+   ("f" "foreground-scripts" "--foreground-scripts")
+   ("g" "ignore-scripts" "--ignore-scripts")
+   ("a" "no-audit" "--no-audit")
+   ("b" "no-bin-links" "--no-bin-links")
+   ("n" "no-fund" "--no-fund")
+   ("d" "dry-run" "--dry-run")
+   ("s" "workspaces" "--workspaces")
+   ("r" "include-workspace-root" "--include-workspace-root")
+   ("i" "install-links" "--install-links")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm update")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm update")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-update-suffix)])
 
 (transient-define-suffix npmjs-view-suffix ()
@@ -5723,40 +4267,8 @@ Run \"npm help view\" for more info"
    ("s" "workspaces" "--workspaces")
    ("j" "json" "--json")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm view")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm view")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-view-suffix)])
 
 (transient-define-suffix npmjs-version-suffix ()
@@ -5829,40 +4341,8 @@ Run \"npm help version\" for more info"
    ("c" "no-commit-hooks" "--no-commit-hooks")
    ("a" "allow-same-version" "--allow-same-version")]
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm version")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm version")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-version-suffix)])
 
 (transient-define-suffix npmjs-whoami-suffix ()
@@ -5889,40 +4369,8 @@ Run \"npm help version\" for more info"
 (transient-define-prefix npmjs-whoami ()
   "Display npm username."
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm whoami")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm whoami")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-whoami-suffix)])
 
 (transient-define-suffix npmjs-get-suffix ()
@@ -5946,6 +4394,18 @@ Run \"npm help version\" for more info"
        (string-join formateted-args " ")
        'face 'success)))))
 
+(defun npmjs-format-transient-args ()
+  "Return string from current transient arguments."
+  (mapconcat (lambda (it)
+               (let ((opt (string-trim it)))
+                 (if (string-match "\s\t" opt)
+                     (shell-quote-argument opt)
+                   opt)))
+             (remove nil (flatten-list
+                          (transient-args
+                           transient-current-command)))
+             "\s"))
+
 ;;;###autoload (autoload 'npmjs-get "npmjs.el" nil t)
 (transient-define-prefix npmjs-get ()
   "Get a value from the npm configuration.
@@ -5954,40 +4414,8 @@ npm get [<key> ...] (See `npm config`)
 
 Run \"npm help get\" for more info"
   ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm get")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm get")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
+   ("RET" "Run" npmjs-done)
+   ("<return>" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-get-suffix)])
 
 (transient-define-suffix npmjs-suffix ()
@@ -6010,6 +4438,7 @@ Run \"npm help get\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-transient "npmjs.el" nil t)
 (transient-define-prefix npmjs-transient ()
   "Npm <command>.
@@ -6071,7 +4500,8 @@ All commands:"
     ("res" "Restart a package" npmjs-restart)
     ("rep" "Open package repository page in the browser" npmjs-repo)
     ("reb" "Rebuild a package" npmjs-rebuild)
-    ("rs" "Run arbitrary package scripts" npmjs-run-script)
+    ("rs" "Run arbitrary package scripts" npmjs-run-script
+     :inapt-if-not npmjs-get-package-json-path)
     ("ro" "Display npm root" npmjs-root)
     ("sea" "Search for packages" npmjs-search)
     ("set" "Set a value in the npm configuration" npmjs-set)
@@ -6088,44 +4518,7 @@ All commands:"
     ("up" "Update packages" npmjs-update)
     ("vi" "View registry info" npmjs-view)
     ("ve" "Bump a package version" npmjs-version)
-    ("w" "Display npm username" npmjs-whoami)
-    ("g" "Get a value from the npm configuration" npmjs-get)]]
-  ["Actions"
-   ("RET" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("<return>" "Run"
-    (lambda ()
-      (interactive)
-      (let* ((args
-              (transient-args transient-current-command))
-             (formateted-args
-              (mapcar
-               (apply-partially #'format "%s")
-               args))
-             (cmd "npm")
-             (full
-              (concat
-               (if cmd
-                   (concat cmd " ")
-                 "")
-               (string-join formateted-args " "))))
-        (async-shell-command full))))
-   ("C-c C-a" "Show arguments" npmjs-suffix)])
+    ("w" "Display npm username" npmjs-whoami)]])
 
 (provide 'npmjs)
 ;;; npmjs.el ends here
