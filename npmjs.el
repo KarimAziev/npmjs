@@ -601,7 +601,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-audit "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-audit "npmjs.el" nil t)
 (transient-define-prefix npmjs-audit ()
   "Run a security audit.
 Usage:
@@ -706,7 +706,7 @@ Run \"npm help audit\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-adduser "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-adduser "npmjs.el" nil t)
 (transient-define-prefix npmjs-adduser ()
   "Add a registry user account.
 Usage:
@@ -797,7 +797,7 @@ Run \"npm help adduser\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-access "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-access "npmjs.el" nil t)
 (transient-define-prefix npmjs-access ()
   "Set access level on published packages.
 Usage:
@@ -883,7 +883,7 @@ Run \"npm help access\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-bugs "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-bugs "npmjs.el" nil t)
 (transient-define-prefix npmjs-bugs ()
   "Report bugs for a package in a web browser.
 Usage:
@@ -963,7 +963,7 @@ Run \"npm help bugs\" for more info"
        (string-join formateted-args " ")
        'face 'success)))))
 
-;;;###autoload (autoload npmjs-bin "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-bin "npmjs.el" nil t)
 (transient-define-prefix npmjs-bin ()
   "Display npm bin folder.
 Usage:
@@ -1039,7 +1039,7 @@ Run \"npm help bin\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-ci "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-ci "npmjs.el" nil t)
 (transient-define-prefix npmjs-ci ()
   "Clean install a project.
 Usage:
@@ -1132,7 +1132,7 @@ Run \"npm help ci\" for more info"
              "add"
              "ls"
              "verify"))
-;;;###autoload (autoload npmjs-cache "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-cache "npmjs.el" nil t)
 (transient-define-prefix npmjs-cache ()
   "Manipulates packages cache.
 Usage:
@@ -1227,7 +1227,7 @@ Run \"npm help cache\" for more info"
   :argument-format "--location %s"
   :argument-regexp "global\\|user\\|project"
   :choices '("global" "user" "project"))
-;;;###autoload (autoload npmjs-config "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-config "npmjs.el" nil t)
 (transient-define-prefix npmjs-config ()
   "Manage the npm configuration files.
 Usage:
@@ -1311,7 +1311,7 @@ Run \"npm help config\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-completion "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-completion "npmjs.el" nil t)
 (transient-define-prefix npmjs-completion ()
   "Tab Completion for npm.
 Usage:
@@ -1375,7 +1375,7 @@ Run \"npm help completion\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-deprecate "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-deprecate "npmjs.el" nil t)
 (transient-define-prefix npmjs-deprecate ()
   "Deprecate a version of a package.
 Usage:
@@ -1445,7 +1445,7 @@ Run \"npm help deprecate\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-dedupe "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-dedupe "npmjs.el" nil t)
 (transient-define-prefix npmjs-dedupe ()
   "Reduce duplication in the package tree.
 Usage:
@@ -1534,7 +1534,7 @@ Run \"npm help dedupe\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-dist-tag "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-dist-tag "npmjs.el" nil t)
 (transient-define-prefix npmjs-dist-tag ()
   "Modify package distribution tags.
 Usage:
@@ -1646,7 +1646,7 @@ Run \"npm help dist-tag\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-diff "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-diff "npmjs.el" nil t)
 (transient-define-prefix npmjs-diff ()
   "The registry diff command.
 Usage:
@@ -1735,7 +1735,7 @@ Run \"npm help diff\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-doctor "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-doctor "npmjs.el" nil t)
 (transient-define-prefix npmjs-doctor ()
   "Check your npm environment.
 Usage:
@@ -1811,7 +1811,7 @@ Run \"npm help doctor\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-docs "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-docs "npmjs.el" nil t)
 (transient-define-prefix npmjs-docs ()
   "Open documentation for a package in a web browser.
 Usage:
@@ -1897,7 +1897,7 @@ Run \"npm help docs\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-edit "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-edit "npmjs.el" nil t)
 (transient-define-prefix npmjs-edit ()
   "Edit an installed package.
 Usage:
@@ -1980,7 +1980,7 @@ Run \"npm help edit\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-exec "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-exec "npmjs.el" nil t)
 (transient-define-prefix npmjs-exec ()
   "Run a command from a local or remote npm package.
 Usage:
@@ -2069,7 +2069,7 @@ Run \"npm help exec\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-explore "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-explore "npmjs.el" nil t)
 (transient-define-prefix npmjs-explore ()
   "Browse an installed package.
 Usage:
@@ -2138,7 +2138,7 @@ Run \"npm help explore\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-explain "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-explain "npmjs.el" nil t)
 (transient-define-prefix npmjs-explain ()
   "Explain installed packages.
 Usage:
@@ -2225,7 +2225,7 @@ Run \"npm help explain\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-fund "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-fund "npmjs.el" nil t)
 (transient-define-prefix npmjs-fund ()
   "Retrieve funding information.
 Usage:
@@ -2302,7 +2302,7 @@ Run \"npm help fund\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-find-dupes "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-find-dupes "npmjs.el" nil t)
 (transient-define-prefix npmjs-find-dupes ()
   "Find duplication in the package tree.
 Usage:
@@ -2388,7 +2388,7 @@ Run \"npm help find-dupes\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-hook "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-hook "npmjs.el" nil t)
 (transient-define-prefix npmjs-hook ()
   "Manage registry hooks.
 Usage:
@@ -2470,7 +2470,7 @@ Run \"npm help hook\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-help "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-help "npmjs.el" nil t)
 (transient-define-prefix npmjs-help ()
   "Get help on npm.
 Usage:
@@ -2548,7 +2548,7 @@ Run \"npm help help\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-init "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-init "npmjs.el" nil t)
 (transient-define-prefix npmjs-init ()
   "Create a package.json file.
 Usage:
@@ -2630,7 +2630,7 @@ Run \"npm help init\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-install-test "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-install-test "npmjs.el" nil t)
 (transient-define-prefix npmjs-install-test ()
   "Install package(s) and run tests.
 
@@ -2740,7 +2740,7 @@ Run \"npm help install-test\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-install "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
 (transient-define-prefix npmjs-install ()
   "Install a package.
 Usage:
@@ -2866,7 +2866,7 @@ Run \"npm help install-ci-test\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-logout "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-logout "npmjs.el" nil t)
 (transient-define-prefix npmjs-logout ()
   "Log out of the registry.
 Usage:
@@ -2950,7 +2950,7 @@ Run \"npm help logout\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-login "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-login "npmjs.el" nil t)
 (transient-define-prefix npmjs-login ()
   "Add a registry user account.
 Usage:
@@ -3031,7 +3031,7 @@ Run \"npm help adduser\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-ls "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-ls "npmjs.el" nil t)
 (transient-define-prefix npmjs-ls ()
   "List installed packages.
 Usage:
@@ -3127,7 +3127,7 @@ Run \"npm help ls\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-ll "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-ll "npmjs.el" nil t)
 (transient-define-prefix npmjs-ll ()
   "List installed packages.
 Usage:
@@ -3218,7 +3218,7 @@ Run \"npm help ll\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-link "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-link "npmjs.el" nil t)
 (transient-define-prefix npmjs-link ()
   "Symlink a package folder.
 Usage:
@@ -3321,7 +3321,7 @@ Run \"npm help link\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-owner "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-owner "npmjs.el" nil t)
 (transient-define-prefix npmjs-owner ()
   "Manage package owners.
 Usage:
@@ -3401,7 +3401,7 @@ Run \"npm help owner\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-outdated "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-outdated "npmjs.el" nil t)
 (transient-define-prefix npmjs-outdated ()
   "Check for outdated packages.
 Usage:
@@ -3478,7 +3478,7 @@ Run \"npm help outdated\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-org "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-org "npmjs.el" nil t)
 (transient-define-prefix npmjs-org ()
   "Manage orgs.
 Usage:
@@ -3555,7 +3555,7 @@ Run \"npm help org\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-prune "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-prune "npmjs.el" nil t)
 (transient-define-prefix npmjs-prune ()
   "Remove extraneous packages.
 Usage:
@@ -3636,7 +3636,7 @@ Run \"npm help prune\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-profile "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-profile "npmjs.el" nil t)
 (transient-define-prefix npmjs-profile ()
   "Change settings on your registry profile.
 Usage:
@@ -3712,7 +3712,7 @@ Run \"npm help profile\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-prefix "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-prefix "npmjs.el" nil t)
 (transient-define-prefix npmjs-prefix ()
   "Display prefix.
 Usage:
@@ -3795,7 +3795,7 @@ Run \"npm help prefix\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-publish "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-publish "npmjs.el" nil t)
 (transient-define-prefix npmjs-publish ()
   "Publish a package.
 Usage:
@@ -3874,7 +3874,7 @@ Run \"npm help publish\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-pkg "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-pkg "npmjs.el" nil t)
 (transient-define-prefix npmjs-pkg ()
   "Manages your package.json.
 Usage:
@@ -3954,7 +3954,7 @@ Run \"npm help pkg\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-ping "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-ping "npmjs.el" nil t)
 (transient-define-prefix npmjs-ping ()
   "Ping npm registry.
 Usage:
@@ -4030,7 +4030,7 @@ Run \"npm help ping\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-pack "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-pack "npmjs.el" nil t)
 (transient-define-prefix npmjs-pack ()
   "Create a tarball from a package.
 Usage:
@@ -4115,7 +4115,7 @@ Run \"npm help pack\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-restart "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-restart "npmjs.el" nil t)
 (transient-define-prefix npmjs-restart ()
   "Restart a package.
 Usage:
@@ -4193,7 +4193,7 @@ Run \"npm help restart\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-repo "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-repo "npmjs.el" nil t)
 (transient-define-prefix npmjs-repo ()
   "Open package repository page in the browser.
 Usage:
@@ -4271,7 +4271,7 @@ Run \"npm help repo\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-rebuild "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-rebuild "npmjs.el" nil t)
 (transient-define-prefix npmjs-rebuild ()
   "Rebuild a package.
 Usage:
@@ -4367,7 +4367,7 @@ Run \"npm help rebuild\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-run-script "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
   "Run arbitrary package scripts.
 Usage:
@@ -4448,7 +4448,7 @@ Run \"npm help run-script\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-root "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-root "npmjs.el" nil t)
 (transient-define-prefix npmjs-root ()
   "Display npm root.
 Usage:
@@ -4531,7 +4531,7 @@ Run \"npm help root\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-search "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-search "npmjs.el" nil t)
 (transient-define-prefix npmjs-search ()
   "Search for packages.
 Usage:
@@ -4624,7 +4624,7 @@ Run \"npm help search\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-set-script "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-set-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-set-script ()
   "Set tasks in the scripts section of package.json, deprecated.
 Usage:
@@ -4698,7 +4698,7 @@ Run \"npm help set-script\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-set "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-set "npmjs.el" nil t)
 (transient-define-prefix npmjs-set ()
   "Set a value in the npm configuration.
 Usage:
@@ -4762,7 +4762,7 @@ Run \"npm help set\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-shrinkwrap "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-shrinkwrap "npmjs.el" nil t)
 (transient-define-prefix npmjs-shrinkwrap ()
   "Lock down dependency versions for publication.
 Usage:
@@ -4833,7 +4833,7 @@ Run \"npm help shrinkwrap\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-start "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-start "npmjs.el" nil t)
 (transient-define-prefix npmjs-start ()
   "Start a package.
 Usage:
@@ -4904,7 +4904,7 @@ Run \"npm help start\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-stars "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-stars "npmjs.el" nil t)
 (transient-define-prefix npmjs-stars ()
   "View packages marked as favorites.
 Usage:
@@ -4973,7 +4973,7 @@ Run \"npm help stars\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-star "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-star "npmjs.el" nil t)
 (transient-define-prefix npmjs-star ()
   "Mark your favorite packages.
 Usage:
@@ -5052,7 +5052,7 @@ Run \"npm help star\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-stop "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-stop "npmjs.el" nil t)
 (transient-define-prefix npmjs-stop ()
   "Stop a package.
 Usage:
@@ -5130,7 +5130,7 @@ Run \"npm help stop\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-test "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-test "npmjs.el" nil t)
 (transient-define-prefix npmjs-test ()
   "Test a package.
 Usage:
@@ -5203,7 +5203,7 @@ Run \"npm help test\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-team "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-team "npmjs.el" nil t)
 (transient-define-prefix npmjs-team ()
   "Manage organization teams and team memberships.
 Usage:
@@ -5291,7 +5291,7 @@ Run \"npm help team\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-token "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-token "npmjs.el" nil t)
 (transient-define-prefix npmjs-token ()
   "Manage your authentication tokens.
 Usage:
@@ -5370,7 +5370,7 @@ Run \"npm help token\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-unstar "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-unstar "npmjs.el" nil t)
 (transient-define-prefix npmjs-unstar ()
   "Remove an item from your favorite packages.
 Usage:
@@ -5442,7 +5442,7 @@ Run \"npm help unstar\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-unpublish "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-unpublish "npmjs.el" nil t)
 (transient-define-prefix npmjs-unpublish ()
   "Remove a package from the registry.
 Usage:
@@ -5517,7 +5517,7 @@ Run \"npm help unpublish\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-uninstall "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-uninstall "npmjs.el" nil t)
 (transient-define-prefix npmjs-uninstall ()
   "Remove a package.
 Usage:
@@ -5602,7 +5602,7 @@ Run \"npm help uninstall\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-update "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-update "npmjs.el" nil t)
 (transient-define-prefix npmjs-update ()
   "Update packages.
 Usage:
@@ -5703,7 +5703,7 @@ Run \"npm help update\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-view "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-view "npmjs.el" nil t)
 (transient-define-prefix npmjs-view ()
   "View registry info.
 Usage:
@@ -5799,7 +5799,7 @@ Run \"npm help view\" for more info"
              "major"
              "from-git"))
 
-;;;###autoload (autoload npmjs-version "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-version "npmjs.el" nil t)
 (transient-define-prefix npmjs-version ()
   "Bump a package version.
 Usage:
@@ -5885,7 +5885,7 @@ Run \"npm help version\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-whoami "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-whoami "npmjs.el" nil t)
 (transient-define-prefix npmjs-whoami ()
   "Display npm username."
   ["Actions"
@@ -5945,7 +5945,8 @@ Run \"npm help version\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-get "npmjs-transient.el" nil t)
+
+;;;###autoload (autoload 'npmjs-get "npmjs.el" nil t)
 (transient-define-prefix npmjs-get ()
   "Get a value from the npm configuration.
 Usage:
@@ -6009,7 +6010,7 @@ Run \"npm help get\" for more info"
       (propertize
        (string-join formateted-args " ")
        'face 'success)))))
-;;;###autoload (autoload npmjs-transient "npmjs-transient.el" nil t)
+;;;###autoload (autoload 'npmjs-transient "npmjs.el" nil t)
 (transient-define-prefix npmjs-transient ()
   "Npm <command>.
 Usage:
