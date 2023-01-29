@@ -2593,8 +2593,8 @@ Run \"npm help adduser\" for more info"
   "Set argument --depth."
   :description "--depth "
   :argument "--depth "
-  :class 'transient-option
-  :always-read t)
+  :reader 'transient-read-number-N0
+  :class 'transient-option)
 
 (transient-define-suffix npmjs-ls-suffix ()
   :transient t
@@ -4149,6 +4149,7 @@ Run \"npm help uninstall\" for more info"
    ("r" "include-workspace-root" "--include-workspace-root")
    ("s" "workspaces" "--workspaces")
    ("b" "save-bundle" "--save-bundle")
+   ("g" "global" "--global")
    ("p" "save-peer" "--save-peer")
    ("o" "save-optional" "--save-optional")
    ("d" "save-dev" "--save-dev")
