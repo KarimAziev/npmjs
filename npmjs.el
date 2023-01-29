@@ -967,7 +967,12 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-login "npm login")
                   ('npmjs-logout "npm logout")
                   ('npmjs-install-test "npm install-test")
-                  ('npmjs-install "npm install")
+                  ('npmjs-install
+                   (list
+                    "npm install"
+                    (let ((package
+                           (npmjs-read-new-dependency)))
+                      package)))
                   ('npmjs-init "npm init")
                   ('npmjs-help "npm help")
                   ('npmjs-hook "npm hook")
@@ -4478,7 +4483,7 @@ All commands:"
     ("ho" "Manage registry hooks" npmjs-hook)
     ("he" "Get help on npm" npmjs-help)
     ("I" "Create a package.json file" npmjs-init)
-    ("i" "Install a package" npmjs-install)
+    ("i" "Install a package" npmjs-install )
     ("ti" "Install package(s) and run tests"
      npmjs-install-test)
     ("logo" "Log out of the registry" npmjs-logout)
