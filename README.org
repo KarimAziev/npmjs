@@ -1,0 +1,50 @@
+* npmjs
+
+Transient menu for almost all NPM commands.
+
+[[./demo.gif]]
+
+** Requirenments
+- Emacs >= 28.1 is required
+- nvm (optional)
+- npm
+
+** Installation
+
+*** Manual
+
+Ensure that you have installed required dependencies:
+- ivy (optional)
+- counsel (optional)
+- json (optional)
+
+Download the source code and put it wherever you like, e.g. into =~/.emacs.d/npmjs/=
+
+#+begin_src shell :eval no
+git clone https://github.com/KarimAziev/npmjs.git ~/.emacs.d/npmjs/
+#+end_src
+
+Add the downloaded directory to the load path:
+
+#+begin_src elisp :eval no
+(add-to-list 'load-path "~/.emacs.d/npmjs/")
+(require 'npmjs)
+#+end_src
+
+#+begin_src elisp :eval no
+
+(use-package npmjs
+  :straight (npmjs
+             :repo "KarimAziev/npmjs"
+             :type git
+             :host github)
+  :commands (npmjs))
+#+end_src
+
+** Usage
+
+Just run:
+
+#+begin_example
+M-x npmjs RET
+#+end_example

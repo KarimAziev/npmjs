@@ -1,4 +1,4 @@
-;;; npmjs.el --- Configure transient -*- lexical-binding: t; -*-
+;;; npmjs.el --- Command dispatcher for NPM -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2023 Karim Aziiev <karim.aziiev@gmail.com>\
 
@@ -25,7 +25,7 @@
 
 ;;; Commentary:
 
-;; Configure transient
+;; Command dispatcher for NPM
 
 ;;; Code:
 
@@ -55,6 +55,7 @@ Return absolute path to package.json or nil."
   (when-let ((project-root (npmjs-get-project-root)))
     (expand-file-name "package.json"
                       project-root)))
+
 (defun npmjs-read-json (file &optional json-type)
   "Read the JSON object in FILE, return object converted to JSON-TYPE.
 JSON-TYPE must be one of `alist', `plist', or `hash-table'."
@@ -154,6 +155,7 @@ JSON-TYPE must be one of `alist', `plist', or `hash-table'."
                                 (cdr b))
     (< (car a)
        (car b))))
+
 (defun npmjs-nvm-find-exact-version-for (short)
   "Find most suitable version for SHORT.
 
@@ -188,6 +190,7 @@ and (if supplied, minor) match."
                         (not (npmjs-nvm-version-compare
                               (npmjs-nvm--version-from-string (car a))
                               (npmjs-nvm--version-from-string (car b)))))))))))))
+
 (defun npmjs-get-nvm-node-version ()
   "Lookup and read .nvmrc file."
   (when-let ((nvmrc (locate-dominating-file default-directory ".nvmrc")))
@@ -4445,8 +4448,8 @@ Run \"npm help get\" for more info"
        (string-join formateted-args " ")
        'face 'success)))))
 
-;;;###autoload (autoload 'npmjs-transient "npmjs.el" nil t)
-(transient-define-prefix npmjs-transient ()
+;;;###autoload (autoload 'npmjs "npmjs.el" nil t)
+(transient-define-prefix npmjs ()
   "Npm <command>.
 Usage:
 
@@ -4484,7 +4487,7 @@ All commands:"
     ("ho" "Manage registry hooks" npmjs-hook)
     ("he" "Get help on npm" npmjs-help)
     ("I" "Create a package.json file" npmjs-init)
-    ("i" "Install a package" npmjs-install )
+    ("i" "Install a package" npmjs-install)
     ("ti" "Install package(s) and run tests"
      npmjs-install-test)
     ("logo" "Log out of the registry" npmjs-logout)
