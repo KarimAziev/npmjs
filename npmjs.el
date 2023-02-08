@@ -47,63 +47,156 @@ among all sesstions."
                  npmjs-common-create-unique-buffer-name)
           function))
 
-(defvar npmjs-json-hash (make-hash-table :test 'equal))
-
-(defun npmjs-get-package-json-path ()
-  "Look up directory hierarchy for directory containing package.json.
-Return absolute path to package.json or nil."
-  (when-let ((project-root (npmjs-get-project-root)))
-    (expand-file-name "package.json"
-                      project-root)))
-
-(defun npmjs-read-json (file &optional json-type)
-  "Read the JSON object in FILE, return object converted to JSON-TYPE.
-JSON-TYPE must be one of `alist', `plist', or `hash-table'."
-  (require 'json)
-  (condition-case nil
-      (let* ((json-object-type (or json-type 'alist))
-             (cache (gethash (format "%s:%s" file json-object-type)
-                             npmjs-json-hash))
-             (cache-tick (and cache (plist-get cache :tick)))
-             (tick (file-attribute-modification-time (file-attributes
-                                                      file
-                                                      'string)))
-             (content-json))
-        (when (or (null cache)
-                  (not (equal tick cache-tick)))
-          (setq content-json
-                (with-temp-buffer
-                  (insert-file-contents file)
-                  (when (fboundp 'json-read-from-string)
-                    (json-read-from-string
-                     (buffer-substring-no-properties (point-min)
-                                                     (point-max))))))
-          (setq cache (list
-                       :tick tick
-                       :json content-json))
-          (puthash file cache npmjs-json-hash))
-        (plist-get cache :json))
-    (error (message "Could't read %s as json."
-                    file))))
-
-(defun npmjs-common-create-unique-buffer-name (root npm-command)
-  "Create buffer name unique to ROOT and NPM-COMMAND."
-  (concat "*" npm-command " in " root "*"))
-
-(defconst npmjs-nvm-version-re
-  "v[0-9]+\.[0-9]+\.[0-9]+"
-  "Regex matching a Node version.")
+;; nvm
 (defcustom npmjs-nvm-dir (or (getenv "NVM_DIR")
                             (expand-file-name "~/.nvm"))
   "Full path to Nvm installation directory."
   :group 'nvm
   :type 'directory)
 
+(defvar-local npmjs--current-command nil)
+(defvar-local npmjs-arguments nil)
+(defvar-local npmjs--current-node-version nil)
+
+;;;###autoload
+(defun npmjs-exec-with-args (command &rest args)
+  "Run a shell COMMAND with ARGS."
+  (let ((cmdline (mapconcat (lambda (it)
+                              (if (string-match-p "\s\t\n" it)
+                                  (shell-quote-argument it)
+                                it))
+                            (append (list command)
+                                    (flatten-list args))
+                            "\s")))
+    (with-temp-buffer
+      (shell-command cmdline (current-buffer))
+      (let ((output (string-trim (buffer-string))))
+        (unless (string-empty-p output)
+          output)))))
+
+(defun npmjs-nvm-path ()
+  "Return path to NVM_DIR if exists."
+  (when-let* ((nvm-dir (or (getenv "NVM_DIR")
+                           (when (file-exists-p "~/.nvm/")
+                             "~/.nvm/")))
+              (file (expand-file-name "nvm.sh" nvm-dir)))
+    (when (file-exists-p file)
+      file)))
+(defconst npmjs-nvm-version-re
+  "v[0-9]+\.[0-9]+\.[0-9]+"
+  "Regex matching a Node version.")
+
+(defvar npmjs-nvm-remote-node-versions-alist nil)
+
+(defun npmjs-nvm-ls-remote ()
+  "Exec $NVM_DIR/nvm.sh and run nvm ls-remote command.
+Return alist of node versions and aliases."
+  (when-let* ((nvm-path (npmjs-nvm-path))
+              (node-versions
+               (npmjs-exec-with-args "source" nvm-path
+                                     "&&" "nvm"
+                                     "ls-remote"
+                                     "--no-colors")))
+    (nreverse
+     (mapcar
+      (lambda (it)
+        (let* ((parts (delete "*" (split-string it nil t)))
+               (found (seq-find
+                       (apply-partially
+                        'string-match-p
+                        npmjs-nvm-version-re)
+                       parts))
+               (meta (string-join (seq-drop (member found parts) 1) "\s")))
+          (cons found meta)))
+      (split-string
+       node-versions
+       "[\n]" t)))))
+
+(defun npmjs-nvm-read-remote-node-version ()
+  "Install node VERSION with nvm."
+  (when-let ((node-versions
+              (or npmjs-nvm-remote-node-versions-alist
+                  (setq npmjs-nvm-remote-node-versions-alist
+                        (npmjs-nvm-ls-remote)))))
+    (let* ((installed (mapcar 'car (npmjs-nvm--installed-versions)))
+           (default-global (npmjs-nvm-strip-prefix
+                            (npmjs-current-default-node-version)))
+           (current-global
+            (when (get-buffer (npmjs--get-global-buffer-name))
+              (npmjs-nvm-strip-prefix
+               (buffer-local-value
+                'npmjs--current-node-version
+                (get-buffer
+                 (npmjs--get-global-buffer-name))))))
+           (project-node
+            (npmjs-nvm-strip-prefix
+             (npmjs-nvm-get-nvmrc-required-node-version)))
+           (curr-node (npmjs-nvm-strip-prefix
+                       npmjs--current-node-version))
+           (items (mapcar (lambda (it)
+                            (seq-copy (car it)))
+                          node-versions))
+           (annotf
+            (lambda (item)
+              (let ((it (npmjs-nvm-strip-prefix item)))
+                (let ((status
+                       (cond ((equal it default-global)
+                              "(System global)")
+                             ((equal it current-global)
+                              "(Current global)")
+                             ((equal it project-node)
+                              "(nvmrc) ")
+                             ((equal it curr-node)
+                              "(Buffer local node) ")))
+                      (install-status (when (member it
+                                                    installed)
+                                        " (installed)"))
+                      (meta (cdr (assoc it node-versions))))
+                  (concat " "
+                          (string-join (delete nil (list status install-status
+                                                         meta))
+                                       "\s")))))))
+      (completing-read "Version: "
+                       (lambda (str pred action)
+                         (if (eq action 'metadata)
+                             `(metadata
+                               (annotation-function . ,annotf))
+                           (complete-with-action action
+                                                 items
+                                                 str pred)))))))
+
+(defun npmjs-nvm-strip-prefix (version)
+  "Stip prefix from VERSION, e.g. v1.0.0 to 1.0.0."
+  (if (and version (string-match-p npmjs-nvm-version-re version))
+      (substring-no-properties version 1)
+    version))
+
+(defun npmjs-nvm-install-node-version ()
+  "Install new node VERSION with CALLBACK."
+  (interactive)
+  (when-let ((nvm-path (npmjs-nvm-path))
+             (version (npmjs-nvm-strip-prefix
+                       (npmjs-nvm-read-remote-node-version))))
+    (if (member version (mapcar 'car (npmjs-nvm--installed-versions)))
+        (message "This version is installed")
+      (npmjs-exec-in-dir (read-string "Run?" (string-join
+                                              (list "source" nvm-path "&&"
+                                                    "nvm"
+                                                    "install"
+                                                    version
+                                                    "--reinstall-packages-from=current")
+                                              "\s"))
+                         default-directory
+                         (lambda (&rest _)
+                           (npmjs-run-as-comint "node -v" (npmjs-nvm-get-env-for-node
+                                                           version)))))))
+
 (defun npmjs-expand-when-exists (filename &optional directory)
   "Expand FILENAME to DIRECTORY and return result if exists."
   (when-let ((file (expand-file-name filename directory)))
     (when (file-exists-p file)
       file)))
+
 
 (defun npmjs-nvm--installed-versions-dirs ()
   "Return list of directories with installed versions of node."
@@ -129,6 +222,24 @@ JSON-TYPE must be one of `alist', `plist', or `hash-table'."
              (list it)
            (directory-files it t npmjs-nvm-version-re))))
      files)))
+
+(defun npmjs-nvm-jump-to-installed-node ()
+  "Read and jump to installed node version."
+  (interactive)
+  (let ((cell (npmjs-nvm-read-installed-node-versions)))
+    (if (and (cdr cell)
+             (file-exists-p (cdr cell))
+             (find-file (cdr cell)))
+        (user-error "Not found %s" cell))))
+
+(defun npmjs-nvm-use-other-version ()
+  "Read and jump to installed node version."
+  (interactive)
+  (let ((cell (npmjs-nvm-read-installed-node-versions)))
+    (if (and (cdr cell)
+             (file-exists-p (cdr cell))
+             (find-file (cdr cell)))
+        (user-error "Not found %s" cell))))
 
 (defun npmjs-nvm--installed-versions ()
   "Return list of directories with installed versions of node."
@@ -191,14 +302,40 @@ and (if supplied, minor) match."
                               (npmjs-nvm--version-from-string (car a))
                               (npmjs-nvm--version-from-string (car b)))))))))))))
 
-(defun npmjs-get-nvm-node-version ()
+(defun npmjs-nvm-get-nvmrc-required-node-version ()
   "Lookup and read .nvmrc file."
   (when-let ((nvmrc (locate-dominating-file default-directory ".nvmrc")))
-    (with-temp-buffer (insert-file-contents (expand-file-name ".nvmrc" nvmrc))
-                      (string-trim (buffer-substring-no-properties (point-min)
-                                                                   (point-max))))))
+    (with-temp-buffer (insert-file-contents
+                       (expand-file-name ".nvmrc" nvmrc))
+                      (string-trim
+                       (buffer-substring-no-properties (point-min)
+                                                       (point-max))))))
 
-(defun npmjs-compile-get-new-env (version)
+(defun npmjs-nvm-read-installed-node-versions ()
+  "Read installed with nvm node versions.
+Return a cons cell with version and absolute path."
+  (let ((alist (npmjs-nvm--installed-versions))
+        (default-version (string-trim (shell-command-to-string "node -v")))
+        (choice))
+    (setq choice (completing-read "Version: "
+                                  (lambda (str pred action)
+                                    (if (eq action 'metadata)
+                                        `(metadata
+                                          (annotation-function .
+                                                               (lambda
+                                                                 (it)
+                                                                 (when
+                                                                     (equal
+                                                                      it
+                                                                      ,default-version)
+                                                                   " (default)"))))
+                                      (complete-with-action action
+                                                            alist
+                                                            str pred)))
+                                  nil t))
+    (cons choice (cdr (assoc choice alist)))))
+
+(defun npmjs-nvm-get-env-for-node (version)
   "Return alist of new environment for node VERSION."
   (when-let* ((version-path (cdr (npmjs-nvm-find-exact-version-for version))))
     (let* ((env-flags
@@ -234,28 +371,74 @@ and (if supplied, minor) match."
 
 (defun npmjs-get-node-env ()
   "Lookup and read .nvmrc file."
-  (when-let ((version (npmjs-get-nvm-node-version)))
-    (if-let ((env (npmjs-compile-get-new-env version)))
+  (when-let ((version (npmjs-nvm-get-nvmrc-required-node-version)))
+    (if-let ((env (npmjs-nvm-get-env-for-node version)))
         env
       (message "Mismatched nvm version")
       nil)))
 
-(defun npmjs-read-nvm-versions ()
-  "Read installed with nvm node versions.
-Return a cons cell with version and absolute path."
-  (let* ((alist (npmjs-nvm--installed-versions))
-         (ver (completing-read "Version: " alist nil t)))
-    (assoc ver alist)))
+
+(defvar npmjs-json-hash (make-hash-table :test 'equal))
+
+(defun npmjs-get-package-json-path ()
+  "Look up directory hierarchy for directory containing package.json.
+Return absolute path to package.json or nil."
+  (when-let ((project-root (npmjs-get-project-root)))
+    (expand-file-name "package.json"
+                      project-root)))
+
+(defun npmjs-read-json (file &optional json-type)
+  "Read the JSON object in FILE, return object converted to JSON-TYPE.
+JSON-TYPE must be one of `alist', `plist', or `hash-table'."
+  (require 'json)
+  (condition-case nil
+      (let* ((json-object-type (or json-type 'alist))
+             (cache (gethash (format "%s:%s" file json-object-type)
+                             npmjs-json-hash))
+             (cache-tick (and cache (plist-get cache :tick)))
+             (tick (file-attribute-modification-time (file-attributes
+                                                      file
+                                                      'string)))
+             (content-json))
+        (when (or (null cache)
+                  (not (equal tick cache-tick)))
+          (setq content-json
+                (with-temp-buffer
+                  (insert-file-contents file)
+                  (when (fboundp 'json-read-from-string)
+                    (json-read-from-string
+                     (buffer-substring-no-properties (point-min)
+                                                     (point-max))))))
+          (setq cache (list
+                       :tick tick
+                       :json content-json))
+          (puthash file cache npmjs-json-hash))
+        (plist-get cache :json))
+    (error (message "Could't read %s as json."
+                    file))))
+
+
+
+(defun npmjs-online-p ()
+  "Check internet connection and return non-nil if so."
+  (if (fboundp 'network-interface-list)
+      (seq-some (lambda (iface)
+                  (unless (equal "lo" (car iface))
+                    (member 'up (car (last (network-interface-info
+                                            (car iface)))))))
+                (network-interface-list))
+    t))
 
 (defun npmjs-exec-in-dir (command &optional directory callback)
   "Execute COMMAND in PROJECT-DIR.
 If DIRECTORY doesn't exists, create new.
 Invoke CALLBACK without args."
-  (let
-      ((proc)
-       (buffer (generate-new-buffer (format "*%s*" (car (split-string command
-                                                                      nil t))))))
+  (let ((proc)
+        (buffer (generate-new-buffer
+                 (format "*%s*" (car (split-string command
+                                                   nil t))))))
     (progn
+      (switch-to-buffer buffer)
       (with-current-buffer buffer
         (when directory
           (setq directory (file-name-as-directory (expand-file-name
@@ -271,7 +454,9 @@ Invoke CALLBACK without args."
         (shell-command-save-pos-or-erase)
         (require 'shell)
         (when (fboundp 'shell-mode)
-          (shell-mode)))
+          (shell-mode))
+        (unless (get-buffer-window buffer)
+          (pop-to-buffer buffer)))
       (set-process-sentinel
        proc
        (lambda (process _state)
@@ -292,19 +477,11 @@ Invoke CALLBACK without args."
       (when (fboundp 'comint-output-filter)
         (set-process-filter proc #'comint-output-filter)))))
 
-(defun npmjs-call-process (command env &rest args)
-  "Execute COMMAND in ENV with ARGS synchronously.
 
-Return stdout output if command existed with zero status, nil otherwise."
-  (let ((buff (generate-new-buffer command)))
-    (with-current-buffer buff
-      (let ((process-environment env))
-        (let ((status (apply #'call-process command nil t nil
-                             (flatten-list args))))
-          (let ((result (string-trim (buffer-string))))
-            (if (= 0 status)
-                (prog1 result (kill-current-buffer))
-              (message result) nil)))))))
+
+(defun npmjs-common-create-unique-buffer-name (root npm-command)
+  "Create buffer name unique to ROOT and NPM-COMMAND."
+  (concat "*" npm-command " in " root "*"))
 
 (defun npmjs-common--generate-buffer-name-function (root npm-command)
   "Generate function which return buffer name to pass `compilation-start'.
@@ -317,6 +494,7 @@ This function uses `npmjs-common-buffer-name-function'."
     (funcall npmjs-common-buffer-name-function
              root npm-command)))
 
+
 (defun npmjs-get-project-root ()
   "Look up directory hierarchy for directory containing package.json.
 Return full path of containing directory or nil."
@@ -324,7 +502,113 @@ Return full path of containing directory or nil."
    default-directory
    "package.json"))
 
+(defun npmjs-get-non-project-root ()
+  "Look up directory hierarchy for first directory without package.json.
+Return full path of containing directory or nil."
+  (let ((dir (or (locate-dominating-file default-directory
+                                         "package.json")
+                 default-directory)))
+    (while
+        (locate-dominating-file dir
+                                "package.json")
+      (setq dir (file-name-parent-directory dir)))
+    dir))
+
 (defvar npmjs-history-dependencies nil)
+(defun npmjs-current-default-node-version ()
+  "Return current default node version."
+  (let ((default-directory (expand-file-name "~/")))
+    (npmjs-nvm-strip-prefix
+     (string-trim
+      (shell-command-to-string
+       "node -v")))))
+
+(defun npmjs-get-current-global-version ()
+  "Return `npmjs--current-node-version' either from project or globally."
+  (or
+   npmjs--current-node-version
+   (when-let ((buff (get-buffer (or
+                                 (npmjs--get-project-buffer-name)
+                                 (npmjs--get-global-buffer-name)))))
+     (buffer-local-value 'npmjs--current-node-version buff))))
+
+(defun npmjs-get-current-node-version ()
+  "Return `npmjs--current-node-version' either from project or globally."
+  (or
+   npmjs--current-node-version
+   (when-let ((buff (get-buffer (or
+                                 (npmjs--get-project-buffer-name)
+                                 (npmjs--get-global-buffer-name)))))
+     (buffer-local-value 'npmjs--current-node-version buff))))
+
+(defun npmjs-confirm-node-version ()
+  "Confirm which node version to use."
+  (let* ((default-global (npmjs-current-default-node-version))
+         (current-global
+          (when (get-buffer (npmjs--get-global-buffer-name))
+            (buffer-local-value 'npmjs--current-node-version
+                                (get-buffer
+                                 (npmjs--get-global-buffer-name)))))
+         (project-node
+          (npmjs-nvm-get-nvmrc-required-node-version))
+         (curr-node npmjs--current-node-version)
+         (cands
+          (seq-uniq
+           (mapcar 'npmjs-nvm-strip-prefix
+                   (delq nil
+                         (list
+                          default-global
+                          current-global
+                          project-node
+                          curr-node)))))
+         (annotf (lambda (it)
+                   (cond ((equal it default-global)
+                          " System Global")
+                         ((equal it current-global)
+                          " Current global")
+                         ((equal it project-node)
+                          " (nvmrc) ")
+                         ((equal it curr-node)
+                          " Buffer local node ")))))
+    (if (<= (length cands) 1)
+        (car cands)
+      (completing-read "Which node to use?"
+                       (lambda (str pred action)
+                         (if (eq action 'metadata)
+                             `(metadata
+                               (annotation-function .
+                                                    ,annotf))
+                           (complete-with-action action
+                                                 cands
+                                                 str pred)))))))
+
+(defun npmjs-compile-global (npm-command)
+  "Generic compile command for NPM-COMMAND with ARGS functionality."
+  (if-let ((nvm-version (npmjs-confirm-node-version)))
+      (let ((env (npmjs-nvm-get-env-for-node
+                  nvm-version))
+            (nvm-path (npmjs-nvm-path)))
+        (if (and (not env)
+                 (yes-or-no-p
+                  (format
+                   "Install node %s?"
+                   nvm-version)))
+            (npmjs-exec-in-dir (string-join
+                                (list "source" nvm-path "&&" "nvm"
+                                      "install"
+                                      (npmjs-nvm-strip-prefix nvm-version)
+                                      "--reinstall-packages-from=current")
+                                "\s")
+                               default-directory
+                               (lambda (&rest _)
+                                 (npmjs-run-as-comint
+                                  npm-command
+                                  (npmjs-nvm-get-env-for-node
+                                   nvm-version))))
+          (npmjs-run-as-comint
+           npm-command
+           (or env process-environment))))
+    (npmjs-run-as-comint npm-command process-environment)))
 
 (defun npmjs-compile (npm-command &rest args)
   "Generic compile command for NPM-COMMAND with ARGS functionality."
@@ -336,22 +620,112 @@ Return full path of containing directory or nil."
                                              (setq i (format "%s" i)))
                                            (string-trim i))
                                          (delq nil (flatten-list args))))))
-  (let ((compenv (let* ((nvm-version (npmjs-get-nvm-node-version))
-                        (env (when nvm-version (npmjs-compile-get-new-env
-                                                nvm-version))))
-                   (or env
-                       (when (and (not env) nvm-version)
-                         (prog1 process-environment
-                           (minibuffer-message
-                            "Warning: Mismatched node version"))))))
-        (buff-name (npmjs-common--generate-buffer-name-function
-                    (npmjs-get-project-root) npm-command)))
-    (with-current-buffer (get-buffer-create buff-name)
-      (let* ((command npm-command)
-             (compilation-read-command nil)
-             (compilation-environment compenv)
-             (compile-command command))
-        (funcall-interactively #'compile command t)))))
+  (if-let ((nvm-version (npmjs-nvm-get-nvmrc-required-node-version)))
+      (let ((env (npmjs-nvm-get-env-for-node
+                  nvm-version))
+            (nvm-path (npmjs-nvm-path)))
+        (if (and (not env)
+                 (yes-or-no-p
+                  (format
+                   "This project requires node %s, which is not installed. Install?"
+                   nvm-version)))
+            (npmjs-exec-in-dir (string-join
+                                (list "source" nvm-path "&&" "nvm"
+                                      "install"
+                                      (npmjs-nvm-strip-prefix nvm-version)
+                                      "--reinstall-packages-from=current")
+                                "\s")
+                               default-directory
+                               (lambda (&rest _)
+                                 (npmjs-run-as-comint
+                                  npm-command
+                                  (npmjs-nvm-get-env-for-node
+                                   nvm-version))))
+          (npmjs-run-as-comint
+           npm-command
+           (or env process-environment))))
+    (npmjs-run-as-comint npm-command process-environment)))
+
+
+
+(defcustom npmjs-started-hook nil
+  "Hooks to run after a npmjs process starts."
+  :group 'npmjs
+  :type 'hook)
+
+(defcustom npmjs-finished-hook nil
+  "Hooks to run after a npmjs process finishes."
+  :group 'npmjs
+  :type 'hook)
+
+(defcustom npmjs-setup-hook nil
+  "Hooks to run before a npmjs process starts."
+  :group 'npmjs
+  :type 'hook)
+
+(defun npmjs-run-as-comint (command &optional env)
+  "Run a npmjs comint session for COMMAND with ARGS and ENV."
+  (let* ((buffer (npmjs--get-buffer))
+         (process (get-buffer-process buffer)))
+    (with-current-buffer buffer
+      (when (comint-check-proc buffer)
+        (unless (or compilation-always-kill
+                    (yes-or-no-p "Kill running npmjs process?"))
+          (user-error "Aborting; npmjs still running")))
+      (when process
+        (delete-process process))
+      (erase-buffer)
+      (setq-local process-environment (or env process-environment))
+      (unless (eq major-mode 'npmjs-mode)
+        (npmjs-mode))
+      (compilation-forget-errors)
+      (insert (format "cwd: %s\ncmd: %s\n\n" default-directory command))
+      (setq npmjs--current-command command)
+      (run-hooks 'npmjs-setup-hook)
+      (let ((process-environment (or env process-environment)))
+        (make-comint-in-buffer "npmjs" buffer "sh" nil "-c" command)
+        (setq npmjs--current-node-version
+              (npmjs-nvm-strip-prefix
+               (string-trim
+                (shell-command-to-string
+                 "node -v"))))
+        (run-hooks 'npmjs-started-hook)
+        (setq process (get-buffer-process buffer))
+        (set-process-sentinel process #'npmjs--process-sentinel)
+        (display-buffer buffer)))))
+
+(define-derived-mode npmjs-mode
+  comint-mode "npmjs"
+  "Major mode for npmjs sessions (derived from `comint-mode')."
+  (setq-local comint-prompt-read-only nil)
+  (compilation-setup t))
+
+(defun npmjs-project-name ()
+  "Return name from current project package.json."
+  (alist-get 'name (npmjs-get-package-json-alist)))
+
+
+(defun npmjs--get-global-buffer-name ()
+  "Get a create a suitable compilation buffer."
+  (format "npmjs<global>"))
+
+(defun npmjs--get-project-buffer-name ()
+  "Get a create a suitable compilation buffer."
+  (when-let ((name (npmjs-project-name)))
+    (format "npmjs<%s>" name)))
+
+(defun npmjs--get-buffer ()
+  "Get a create a suitable compilation buffer."
+  (if (eq major-mode 'npmjs-mode)
+      (current-buffer)
+    (get-buffer-create
+     (or (npmjs--get-project-buffer-name)
+         (npmjs--get-global-buffer-name)))))
+
+(defun npmjs--process-sentinel (proc _state)
+  "Process sentinel helper to run hooks after PROC finishes."
+  (with-current-buffer (process-buffer proc)
+    (run-hooks 'npmjs-finished-hook)))
 
 ;;;###autoload
 (defun npmjs-read-new-dependency (&optional initial-input)
@@ -397,191 +771,251 @@ INITIAL-INPUT can be given as the initial minibuffer input."
 (defvar npmjs-bmenu-last-search-regexp nil)
 (defvar npmjs-bmenu-search-buff-name "*npm search*")
 (defvar npmjs-bmenu-search-output nil)
+
 (defun npmjs--alist-props (props alist)
   "Pick PROPS from ALIST."
   (mapcar (lambda (k)
             (alist-get k alist))
           props))
-(define-derived-mode npmjs-search-mode tabulated-list-mode
-  "Show report gathered about unused definitions."
-  (setq-local tabulated-list-format
-              [("Name" 40 nil)
-               ("Version" 10 nil)
-               ("Description" 33 nil)])
-  (add-hook 'tabulated-list-revert-hook #'npmjs-table--revert nil t)
-  (setq revert-buffer-function 'npmjs-table--revert)
-  (tabulated-list-init-header))
 
-(defun npmjs-table--revert ()
+(defvar npmjs--marked-packages nil)
+(defvar-local npmjs-search-highlight-ov nil
+  "An overlay for `npmjs-search-mode'.")
+
+(defun npmjs-search-highlight-current ()
+  "Highlight current line."
+  (let ((ov (seq-find (lambda (o)
+                        (overlay-get o 'npmjs))
+                      (overlays-at (point)))))
+    (unless ov
+      (if npmjs-search-highlight-ov
+          (move-overlay npmjs-search-highlight-ov (line-beginning-position)
+                        (line-end-position))
+        (setq npmjs-search-highlight-ov (make-overlay (line-beginning-position)
+                                                      (line-end-position)))
+        (overlay-put npmjs-search-highlight-ov 'face 'success)
+        (overlay-put npmjs-search-highlight-ov 'npmjs t)))))
+
+
+
+(defun npmjs-search-parseable-to-rows (output)
+  "Map OUTPUT to rows."
+  (let ((rows (split-string output "[\n\r\f]" t)))
+    (delq nil
+          (mapcar
+           (lambda (it)
+             (let* ((parts (split-string it "[\t]"))
+                    (name (car parts)))
+               (list name
+                     (apply #'vector
+                            (list (or (car parts) name)
+                                  (or (nth 1 parts) "")
+                                  (or (nth 4 parts) ""))))))
+           rows))))
+
+(defun npmjs-table--revert (&rest _)
   "Revert table."
-  (let ((rows (mapcar
-               (lambda (a)
-                 (list (alist-get 'name a)
-                       (apply #'vector (npmjs--alist-props
-                                       '(name
-                                         version
-                                         description)
-                                       a))))
-               npmjs-bmenu-search-output)))
-    (setq tabulated-list-entries rows))
-  (tabulated-list-print t))
+  (setq tabulated-list-entries (npmjs-search-parseable-to-rows
+                                npmjs-bmenu-search-output))
+  (tabulated-list-print t)
+  (npmjs-search-highlight-current))
 
-(defun npmjs-search-package-by-regexp (regexp)
-  "Filter `bookmark-alist' with bookmarks matching REGEXP and rebuild list."
+(declare-function json-read-from-string  "json")
+
+(defun npmjs-search-package-by-regexp (regexp &optional args)
+  "Perfoms npm search with REGEXP and ARGS."
   (require 'json)
-  (unless (or (string-empty-p regexp)
-              (equal npmjs-bmenu-last-search-regexp regexp))
-    (setq npmjs-bmenu-last-search-regexp regexp)
+  (unless (string-empty-p (string-trim regexp))
     (setq npmjs-bmenu-search-output
-          (append
-           (when (fboundp 'json-read-from-string)
-             (json-read-from-string
-              (string-trim
-               (shell-command-to-string
-                (concat
-                 "npm search "
-                 regexp
-                 " --json")))))
-           nil))
-    (with-current-buffer (get-buffer-create npmjs-bmenu-search-buff-name)
-      (with-current-buffer-window
-          npmjs-bmenu-search-buff-name
-          (cons (or 'display-buffer-in-side-window)
-                '((window-height . 25)))
-          (lambda (window _value)
-            (with-selected-window window
-              (if (eq major-mode 'npmjs-search-mode)
-                  (npmjs-table--revert)
-                (npmjs-search-mode)
-                (let ((rows (mapcar
-                             (lambda (a)
-                               (list (alist-get 'name a)
-                                     (apply #'vector (npmjs--alist-props
-                                                     '(name
-                                                       version
-                                                       description)
-                                                     a))))
-                             npmjs-bmenu-search-output)))
-                  (setq tabulated-list-entries rows))
-                (tabulated-list-print))))))))
+          (shell-command-to-string
+           (concat
+            "npm search "
+            regexp
+            (or (if (listp args)
+                    (string-join args " ") args)
+                "")
+            " -p" (if (npmjs-online-p) "" " --offline"))))
+    (let ((buff (get-buffer-create npmjs-bmenu-search-buff-name)))
+      (with-current-buffer buff
+        (if (eq major-mode 'npmjs-search-mode)
+            (npmjs-table--revert)
+          (npmjs-search-mode)
+          (setq tabulated-list-entries (npmjs-search-parseable-to-rows
+                                        npmjs-bmenu-search-output))
+          (tabulated-list-print t)
+          (npmjs-search-highlight-current))
+        (unless (get-buffer-window buff)
+          (select-window
+           (let ((ignore-window-parameters t))
+             (split-window
+              (frame-root-window) -1 'below))
+           'norecord)
+          (pop-to-buffer-same-window buff))
+        (fit-window-to-buffer nil 28 28 nil nil t)))))
+
+(defun npmjs-search-package--forward-line-0 (&optional n)
+  "Forward N lines in buffer `npmjs-bmenu-search-buff-name'."
+  (let* ((id (tabulated-list-get-id))
+         (new-id (progn (forward-line n)
+                        (tabulated-list-get-id))))
+    (cond ((not new-id)
+           (if (and n (< n 0))
+               (progn (goto-char (point-max))
+                      (forward-line -1))
+             (goto-char (point-min))))
+          ((equal new-id id)
+           (if (and n (< n 0))
+               (progn (goto-char (point-max))
+                      (forward-line -1))
+             (goto-char (point-min)))))
+    (npmjs-search-highlight-current)))
+
+(defun npmjs-search-package--forward-line (&optional n)
+  "Forward N lines in buffer `npmjs-bmenu-search-buff-name'."
+  (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
+      (npmjs-search-package--forward-line-0 n)
+    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+      (with-current-buffer buff
+        (npmjs-search-package--forward-line-0 n)))))
 
 (defun npmjs-search-package--next-line ()
   "Forward line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
-  (when-let ((wind (get-buffer-window npmjs-bmenu-search-buff-name)))
-    (with-selected-window wind
-      (funcall-interactively #'forward-line))))
-
+  (npmjs-search-package--forward-line 1))
 
 (defun npmjs-search-package--prev-line ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
+  (npmjs-search-package--forward-line -1))
+
+(defun npmjs-search-package--beg-of-buffer ()
+  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  (interactive)
   (when-let ((wind (get-buffer-window npmjs-bmenu-search-buff-name)))
     (with-selected-window wind
-      (funcall-interactively #'forward-line -1))))
+      (goto-char (point-min))
+      (unless (tabulated-list-get-id)
+        (forward-line 1)
+        (npmjs-search-highlight-current)))))
 
+(defun npmjs-search-package--end-of-buffer ()
+  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  (interactive)
+  (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
+      (progn
+        (goto-char (point-max))
+        (if (tabulated-list-get-id)
+            (npmjs-search-highlight-current)
+          (forward-line -1)
+          (npmjs-search-highlight-current)))
+    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+      (with-current-buffer buff
+        (progn
+          (goto-char (point-max))
+          (if (tabulated-list-get-id)
+              (npmjs-search-highlight-current)
+            (forward-line -1)
+            (npmjs-search-highlight-current)))))))
+
+(defun npmjs-search-package-mark-or-unmark ()
+  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  (interactive)
+  (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
+      (npmjs--mark-or-unmark)
+    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+      (with-current-buffer buff
+        (npmjs--mark-or-unmark)))))
+
+(defun npmjs--mark-or-unmark ()
+  "Clear any mark on a gist and move to the next line."
+  (when-let ((name (tabulated-list-get-id (point))))
+    (setq npmjs--marked-packages
+          (if (member name npmjs--marked-packages)
+              (delete name npmjs--marked-packages)
+            (append npmjs--marked-packages (list name))))
+    (let ((marked npmjs--marked-packages))
+      (when (active-minibuffer-window)
+        (select-window (active-minibuffer-window))
+        (delete-minibuffer-contents)
+        (when marked
+          (insert (string-join marked ",")
+                  (if marked "," "")))))))
 
 ;;;###autoload
-(defun npmjs-search-package ()
-  "Incremental search of npm packages."
+(defun npmjs-search-package (&optional args)
+  "Incremental search of npm packages with ARGS."
   (interactive)
   (let ((timer nil))
     (unwind-protect
         (minibuffer-with-setup-hook
             (lambda ()
-              (setq timer
-                    (run-with-idle-timer
-                     0.2 'repeat
-                     (lambda (buf)
-                       (let ((input
-                              (with-current-buffer buf
-                                (use-local-map
-                                 (let ((map (make-sparse-keymap)))
-                                   (define-key map [remap next-line]
-                                               'npmjs-search-package--next-line)
-                                   (define-key map [remap
-                                                    previous-line]
-                                               'npmjs-search-package--prev-line)
-                                   (set-keymap-parent map
-                                                      (current-local-map))
-                                   map))
-                                (car
-                                 (last
-                                  (split-string
-                                   (minibuffer-contents) nil t))))))
-                         (npmjs-search-package-by-regexp
-                          input)))
-                     (current-buffer))))
+              (when (minibufferp)
+                (setq
+                 timer
+                 (run-with-idle-timer
+                  0.2 'repeat
+                  (lambda (buf)
+                    (when-let
+                        ((input
+                          (with-current-buffer buf
+                            (use-local-map
+                             (let ((map (make-sparse-keymap)))
+                               (define-key map [remap next-line]
+                                           'npmjs-search-package--next-line)
+                               (define-key map [remap
+                                                previous-line]
+                                           'npmjs-search-package--prev-line)
+                               (define-key map [remap
+                                                set-mark-command]
+                                           'npmjs-search-package-mark-or-unmark)
+                               (define-key map [remap
+                                                scroll-down-command]
+                                           'npmjs-search-package--beg-of-buffer)
+                               (define-key map [remap
+                                                scroll-up-command]
+                                           'npmjs-search-package--end-of-buffer)
+                               (set-keymap-parent map
+                                                  (current-local-map))
+                               map))
+                            (ignore-errors (car
+                                            (last
+                                             (seq-difference
+                                              (split-string
+                                               (minibuffer-contents-no-properties)
+                                               "," t)
+                                              npmjs--marked-packages)))))))
+                      (npmjs-search-package-by-regexp
+                       input
+                       args)
+                      (select-window (active-minibuffer-window))))
+                  (current-buffer)))))
           (read-string "Package: ")
           (when timer (cancel-timer timer)
                 (setq timer nil))
-          (setq npmjs-bmenu-last-search-regexp nil)
-          (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
-            (print (with-current-buffer buff
-                     (tabulated-list-get-id)))))
+          (when-let* ((buff (get-buffer npmjs-bmenu-search-buff-name))
+                      (result (with-current-buffer buff
+                                (let ((result (or npmjs--marked-packages
+                                                  (tabulated-list-get-id))))
+                                  (setq npmjs--marked-packages nil)
+                                  result))))
+            (print result)
+            result))
       (when timer
         (cancel-timer timer))
-      (setq npmjs-bmenu-last-search-regexp nil))))
+      (setq npmjs--marked-packages nil))))
 
-;;;###autoload
-(defun npmjs-search-complete ()
-  "Incremental search of bookmarks, hiding the non-matches as we go."
-  (interactive)
-  (let ((timer nil)
-        (minibuffer-completion-table))
-    (unwind-protect
-        (minibuffer-with-setup-hook
-            (lambda ()
-              (fido-mode)
-              (setq timer
-                    (run-with-idle-timer
-                     0.2 'repeat
-                     (lambda (buf)
-                       (when-let ((input
-                                   (with-current-buffer buf
-                                     (use-local-map
-                                      (let ((map
-                                             (make-sparse-keymap)))
-                                        (define-key map [remap
-                                                         next-line]
-                                                    'npmjs-search-package--next-line)
-                                        (define-key map
-                                                    [remap
-                                                     previous-line]
-                                                    'npmjs-search-package--prev-line)
-                                        (set-keymap-parent map
-                                                           (current-local-map))
-                                        map))
-                                     (car
-                                      (last
-                                       (split-string
-                                        (minibuffer-contents) nil t))))))
-                         (setq minibuffer-completion-table
-                               (mapcar
-                                (lambda (it)
-                                  (car
-                                   (split-string
-                                    it
-                                    nil
-                                    t)))
-                                (split-string
-                                 (shell-command-to-string
-                                  (concat
-                                   "npm search "
-                                   input))
-                                 "\n" t)))
-                         (minibuffer-completion-help)))
-                     (current-buffer))))
-          (completing-read
-           "Issue "
-           (completion-table-dynamic (lambda (_) minibuffer-completion-table)))
-          (when timer (cancel-timer timer)
-                (setq timer nil))
-          (setq npmjs-bmenu-last-search-regexp nil))
-      (when timer ;; Signaled an error or a `quit'.
-        (cancel-timer timer))
-      (fido-mode -1)
-      (setq npmjs-bmenu-last-search-regexp nil))))
+(define-derived-mode npmjs-search-mode tabulated-list-mode
+  "Show report gathered about unused definitions."
+  (setq-local tabulated-list-format
+              [("Name" 40 nil)
+               ("Description" 50 nil)
+               ("Version" 5 nil)])
+  (add-hook 'tabulated-list-revert-hook #'npmjs-table--revert nil t)
+  (add-hook 'post-command-hook 'npmjs-search-highlight-current nil t)
+  (setq cursor-type nil)
+  (setq tabulated-list-padding 2)
+  (setq revert-buffer-function 'npmjs-table--revert)
+  (tabulated-list-init-header))
 
 (defun npmjs--menu-mark-delete (&optional _num)
   "Mark a gist for deletion and move to the next line."
@@ -598,25 +1032,6 @@ INITIAL-INPUT can be given as the initial minibuffer input."
   (interactive "p")
   (tabulated-list-put-tag " " t))
 
-(defun npmjs--menu-execute ()
-  "Perform marked gist list actions."
-  (interactive)
-  (unless (derived-mode-p 'npmjs-list-mode)
-    (error "The current buffer is not in Jist list mode"))
-  (let (clone-list delete-list cmd gist-id)
-    (save-excursion
-      (goto-char (point-min))
-      (while (not (eobp))
-        (setq cmd (char-after))
-        (unless (eq cmd ?\s)
-          (setq gist-id (tabulated-list-get-id))
-          (cond ((eq cmd ?D)
-                 (push gist-id delete-list))
-                ((eq cmd ?C)
-                 (push gist-id clone-list))))
-        (forward-line)))
-    (unless (or delete-list clone-list)
-      (user-error "No operations specified"))))
 
 (defvar npmjs-list-mode-map
   (let ((map (make-sparse-keymap)))
@@ -625,6 +1040,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
     (define-key map "m" 'npmjs--menu-mark-upgrade)
     (define-key map "u" 'npmjs--menu-mark-unmark)
     map))
+
 
 (define-derived-mode npmjs-list-mode tabulated-list-mode
   "Show report gathered about unused definitions."
@@ -635,6 +1051,11 @@ INITIAL-INPUT can be given as the initial minibuffer input."
   (setq tabulated-list-padding 2)
   (tabulated-list-init-header))
 
+(defun npmjs-get-package-json-alist ()
+  "Return list of globally installed packages."
+  (when-let ((package-json-file (npmjs-get-package-json-path)))
+    (ignore-errors (npmjs-read-json package-json-file
+                                    'alist))))
 
 (defun npmjs-global-packages ()
   "Return list of globally installed packages."
@@ -659,7 +1080,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                              default-directory)))
          (process-environment (or (npmjs-get-node-env) process-environment))
          (alist (npmjs-local-packages))
-         (prompt (format "Globally intstalled packages (%s): "
+         (prompt (format "Locally intstalled packages (%s): "
                          (string-trim (shell-command-to-string
                                        "node -v"))))
          (annotf (lambda (it)
@@ -755,7 +1176,9 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                              (npmjs-get-project-root)
                              (vc-root-dir)
                              default-directory)))
-         (process-environment (or (npmjs-get-node-env) process-environment))
+         (process-environment (or (npmjs-nvm-get-env-for-node
+                                   (npmjs-confirm-node-version))
+                                  process-environment))
          (alist (npmjs-pluck-depenencies (npmjs-global-packages)))
          (prompt (format "Globally intstalled packages (%s): "
                          (string-trim (shell-command-to-string
@@ -772,6 +1195,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                              (annotation-function . ,annotf))
                          (complete-with-action action alist
                                                str pred))))))
+
 (defun npmjs-s-strip-props (item)
   "If ITEM is string, return it without text properties.
 
@@ -868,15 +1292,82 @@ INITIAL-INPUT can be given as the initial minibuffer input."
         (format "%s@%s" package version)
       package)))
 
+(defun npmjs-read-script ()
+  "Read package json script."
+  (let* ((alist
+          (when-let* ((package-json-path
+                       (npmjs-get-package-json-path))
+                      (package-json
+                       (npmjs-read-json
+                        package-json-path
+                        'alist)))
+            (alist-get
+             'scripts
+             package-json)))
+         (annotf
+          (lambda (it)
+            (concat ": "
+                    (cdr
+                     (assoc
+                      (intern
+                       it)
+                      alist))))))
+    (completing-read "Script: "
+                     (lambda (str pred
+                             action)
+                       (if
+                           (eq action
+                               'metadata)
+                           `(metadata
+                             (annotation-function
+                              . ,annotf))
+                         (complete-with-action
+                          action alist
+                          str
+                          pred))))))
+
+(defun npmjs-default-format-args (args)
+  "Format ARGS to string."
+  (mapconcat (lambda (it)
+               (let ((opt (string-trim it)))
+                 (if (string-match "\s\t" opt)
+                     (shell-quote-argument opt)
+                   opt)))
+             (remove nil (flatten-list
+                          args))
+             "\s"))
 
 ;; transient
+(defun npmjs-format-transient-args ()
+  "Return string from current transient arguments."
+  (let ((args (transient-args
+               transient-current-command)))
+    (pcase transient-current-command
+      ('npmjs-audit (npmjs-default-format-args
+                     (if-let ((subcommand
+                               (seq-find
+                                (lambda (it)
+                                  (member
+                                   it
+                                   args))
+                                '("signatures"
+                                  "fix"))))
+                         (append (list subcommand)
+                                 (remove subcommand args))
+                       args)))
+      (_ (npmjs-default-format-args
+          args)))))
+
 
 ;;;###autoload
 (defun npmjs-done ()
   "Execute npm transient command."
   (interactive)
   (when transient-current-command
-    (let* ((formatted-args (npmjs-format-transient-args))
+    (let* ((global (transient-arg-value "--global"
+                                        (transient-args
+                                         transient-current-command)))
+           (formatted-args (npmjs-format-transient-args))
            (cmd (pcase transient-current-command
                   ('npmjs-get "npm get")
                   ('npmjs-whoami "npm whoami")
@@ -885,10 +1376,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-update
                    (let ((package
                           (if
-                              (transient-arg-value
-                               "--global"
-                               (transient-args
-                                transient-current-command))
+                              global
                               (npmjs-read-global-packages)
                             (npmjs-read-local-packages))))
                      (concat "npm update " (or (npmjs-confirm-package-version
@@ -905,51 +1393,18 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-start "npm start")
                   ('npmjs-shrinkwrap "npm shrinkwrap")
                   ('npmjs-set "npm set")
-                  ('npmjs-search "npm search")
+                  ;; ('npmjs-search "npm search")
                   ('npmjs-root "npm root")
-                  ('npmjs-run-script (list "npm run-script"
-                                           (let* ((alist
-                                                   (when-let* ((package-json-path
-                                                                (npmjs-get-package-json-path))
-                                                               (package-json
-                                                                (npmjs-read-json
-                                                                 package-json-path
-                                                                 'alist)))
-                                                     (alist-get
-                                                      'scripts
-                                                      package-json)))
-                                                  (annotf
-                                                   (lambda (it)
-                                                     (concat ": "
-                                                             (cdr
-                                                              (assoc
-                                                               (intern
-                                                                it)
-                                                               alist))))))
-                                             (completing-read "Script: "
-                                                              (lambda (str pred
-                                                                      action)
-                                                                (if
-                                                                    (eq action
-                                                                        'metadata)
-                                                                    `(metadata
-                                                                      (annotation-function
-                                                                       . ,annotf))
-                                                                  (complete-with-action
-                                                                   action alist
-                                                                   str
-                                                                   pred)))))))
+                  ('npmjs-run-script
+                   (list "npm run-script"
+                         (npmjs-read-script)))
                   ('npmjs-rebuild "npm rebuild")
                   ('npmjs-repo "npm repo")
                   ('npmjs-restart "npm restart")
                   ('npmjs-uninstall
                    (string-join (list "npm uninstall"
                                       (let ((package
-                                             (if
-                                                 (transient-arg-value
-                                                  "--global"
-                                                  (transient-args
-                                                   transient-current-command))
+                                             (if global
                                                  (npmjs-read-global-packages)
                                                (npmjs-read-local-packages))))
                                         package))
@@ -973,10 +1428,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-install
                    (list
                     "npm install"
-                    (let ((package
-                           (npmjs-read-new-dependency)))
-                      package)))
-                  ('npmjs-init "npm init")
+                    (funcall-interactively 'npmjs-search-package)))
                   ('npmjs-help "npm help")
                   ('npmjs-hook "npm hook")
                   ('npmjs-find-dupes "npm find-dupes")
@@ -984,7 +1436,11 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-explain "npm explain")
                   ('npmjs-explore "npm explore")
                   ('npmjs-exec "npm exec")
-                  ('npmjs-edit "npm edit")
+                  ('npmjs-edit (list "npm edit"
+                                     (if (or global (not
+                                                     (npmjs-get-project-root)))
+                                         (npmjs-read-global-packages)
+                                       (npmjs-read-local-packages))))
                   ('npmjs-docs "npm docs")
                   ('npmjs-doctor "npm doctor")
                   ('npmjs-diff "npm diff")
@@ -998,24 +1454,35 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-bugs "npm bugs")
                   ('npmjs-access "npm access")
                   ('npmjs-adduser "npm adduser")
-                  ('npmjs-audit "npm audit")))
-           (full-cmd (string-trim (string-join
-                                   (remove nil
-                                           (flatten-list
-                                            (list cmd
-                                                  formatted-args)))
-                                   "\s"))))
-      (let ((default-directory (expand-file-name (or
-                                                  (npmjs-get-project-root)
-                                                  (vc-root-dir)
-                                                  default-directory))))
-        (npmjs-compile (read-string "Run: " full-cmd))))))
+                  ('npmjs-audit (list "npm audit"))))
+           (full-cmd (string-trim
+                      (string-join
+                       (remove nil
+                               (flatten-list
+                                (list cmd
+                                      formatted-args)))
+                       "\s"))))
+      (if global
+          (npmjs-compile-global (read-string "Run: " full-cmd))
+        (let ((default-directory (expand-file-name (or
+                                                    (npmjs-get-project-root)
+                                                    (vc-root-dir)
+                                                    default-directory))))
+          (npmjs-compile (read-string "Run: " full-cmd)))))))
+
+(transient-define-suffix npmjs-show-args ()
+  :transient t
+  (interactive)
+  (when-let ((args
+              (npmjs-format-transient-args)))
+    (message
+     (propertize args 'face 'success))))
 
 (transient-define-argument npmjs-audit--audit-level ()
   "Set argument --audit-level."
   :class 'transient-switches
   :description "Level"
-  :argument-format "--audit-level %s"
+  :argument-format "--audit-level=%s"
   :argument-regexp "info\\|low\\|moderate\\|high\\|critical"
   :choices '("info" "low" "moderate" "high" "critical"))
 
@@ -1042,31 +1509,25 @@ INITIAL-INPUT can be given as the initial minibuffer input."
 
 (transient-define-argument npmjs--otp-option ()
   "Set argument --otp."
-  :description "--otp "
+  :description "One time password "
   :argument "--otp "
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-audit-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm audit")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+(transient-define-argument npmjs--depth-option ()
+  "Set argument --depth."
+  :description "--depth "
+  :argument "--depth "
+  :class 'transient-option)
+
+(transient-define-argument npmjs-audit-subcommand-option ()
+  :class 'transient-switches
+  :description "Command"
+  :argument-format "%s"
+  :argument-regexp
+  "fix\\|signatures"
+  :choices '("fix" "signatures"))
+
 ;;;###autoload (autoload 'npmjs-audit "npmjs.el" nil t)
 (transient-define-prefix npmjs-audit ()
   "Run a security audit.
@@ -1074,7 +1535,7 @@ Usage:
 npm audit [fix|signatures]
 
 Options:
-[--audit-level <info|low|moderate|high|critical|none>] [--dry-run] [-f|--force]
+[--audit-level= <info|low|moderate|high|critical|none>] [--dry-run] [-f|--force]
 [--json] [--package-lock-only]
 [--omit <dev|optional|peer> [--omit <dev|optional|peer> ...]]
 [--foreground-scripts] [--ignore-scripts]
@@ -1085,7 +1546,8 @@ Run \"npm help audit\" for more info"
   ["Arguments"
    ("w" npmjs--workspace-option)
    ("o" npmjs--omit-option)
-   ("a" npmjs-audit--audit-level)]
+   ("a" npmjs-audit--audit-level)
+   ("c" npmjs-audit-subcommand-option)]
   ["Switches"
    ("i" "install-links" "--install-links")
    ("r" "include-workspace-root" "--include-workspace-root")
@@ -1099,7 +1561,7 @@ Run \"npm help audit\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-audit-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-adduser--auth-type ()
   "Set argument --auth-type."
@@ -1120,26 +1582,7 @@ Run \"npm help audit\" for more info"
   :argument "--scope "
   :class 'transient-option)
 
-(transient-define-suffix npmjs-adduser-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm adduser")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-adduser "npmjs.el" nil t)
 (transient-define-prefix npmjs-adduser ()
   "Add a registry user account.
@@ -1160,7 +1603,7 @@ Run \"npm help adduser\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-adduser-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-access-type-options ()
   :class 'transient-switches
@@ -1179,26 +1622,7 @@ Run \"npm help adduser\" for more info"
              "revoke"
              "grant"))
 
-(transient-define-suffix npmjs-access-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm access")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-access "npmjs.el" nil t)
 (transient-define-prefix npmjs-access ()
   "Set access level on published packages.
@@ -1224,7 +1648,7 @@ Run \"npm help access\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-access-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-bugs--browser ()
   "Set argument --browser."
@@ -1233,26 +1657,7 @@ Run \"npm help access\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-bugs-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm bugs")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-bugs "npmjs.el" nil t)
 (transient-define-prefix npmjs-bugs ()
   "Report bugs for a package in a web browser.
@@ -1278,28 +1683,9 @@ Run \"npm help bugs\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-bugs-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-bin-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm bin")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 
 ;;;###autoload (autoload 'npmjs-bin "npmjs.el" nil t)
 (transient-define-prefix npmjs-bin ()
@@ -1319,7 +1705,7 @@ Run \"npm help bin\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-bin-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-ci--script-shell ()
   "Set argument --script-shell."
@@ -1328,26 +1714,7 @@ Run \"npm help bin\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-ci-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm ci")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-ci "npmjs.el" nil t)
 (transient-define-prefix npmjs-ci ()
   "Clean install a project.
@@ -1370,39 +1737,22 @@ Run \"npm help ci\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-ci-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-cache--cache ()
   "Set argument --cache."
-  :description "--cache "
+  :description "Cache "
   :argument "--cache "
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-cache-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm cache")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
-
 (transient-define-argument npmjs-cache-options ()
   :class 'transient-switches
   :argument-format "%s"
+  :init-value (lambda (ob)
+                (when (not (slot-value ob 'value))
+                  (setf (slot-value ob 'value)
+                        "ls")))
   :argument-regexp
   "clean\\|add\\|ls\\|verify"
   :choices '("clean"
@@ -1423,40 +1773,22 @@ Options:
 
 Run \"npm help cache\" for more info"
   ["Arguments"
-   ("c" npmjs-cache--cache)
-   ("s" npmjs-cache-options)]
+   ("c" "Cache" "--cache " :class transient-option)
+   ("s" "Commmand" npmjs-cache-options)]
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-cache-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-config--editor ()
   "Set argument --editor."
   :description "--editor "
   :argument "--editor "
-  :class 'transient-option
-  :always-read t)
-
-(transient-define-suffix npmjs-config-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm config")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+  :init-value (lambda (ob)
+                (when (not (slot-value ob 'value))
+                  (setf (slot-value ob 'value)
+                        "emacsclient")))
+  :class 'transient-option)
 
 (transient-define-argument npmjs-config-argument ()
   :class 'transient-switches
@@ -1504,28 +1836,9 @@ Run \"npm help config\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-config-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-completion-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm completion")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-completion "npmjs.el" nil t)
 (transient-define-prefix npmjs-completion ()
   "Tab Completion for npm.
@@ -1536,28 +1849,9 @@ Run \"npm help completion\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-completion-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-deprecate-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm deprecate")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-deprecate "npmjs.el" nil t)
 (transient-define-prefix npmjs-deprecate ()
   "Deprecate a version of a package.
@@ -1574,28 +1868,9 @@ Run \"npm help deprecate\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-deprecate-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-dedupe-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm dedupe")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-dedupe "npmjs.el" nil t)
 (transient-define-prefix npmjs-dedupe ()
   "Reduce duplication in the package tree.
@@ -1631,28 +1906,9 @@ Run \"npm help dedupe\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-dedupe-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-dist-tag-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm dist-tag")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-dist-tag "npmjs.el" nil t)
 (transient-define-prefix npmjs-dist-tag ()
   "Modify package distribution tags.
@@ -1676,7 +1932,7 @@ Run \"npm help dist-tag\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-dist-tag-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-diff--tag ()
   "Set argument --tag."
@@ -1713,26 +1969,7 @@ Run \"npm help dist-tag\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-diff-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm diff")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-diff "npmjs.el" nil t)
 (transient-define-prefix npmjs-diff ()
   "The registry diff command.
@@ -1771,28 +2008,9 @@ Run \"npm help diff\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-diff-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-doctor-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm doctor")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-doctor "npmjs.el" nil t)
 (transient-define-prefix npmjs-doctor ()
   "Check your npm environment.
@@ -1808,7 +2026,7 @@ Run \"npm help doctor\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-doctor-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-docs--browser ()
   "Set argument --browser."
@@ -1817,26 +2035,7 @@ Run \"npm help doctor\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-docs-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm docs")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-docs "npmjs.el" nil t)
 (transient-define-prefix npmjs-docs ()
   "Open documentation for a package in a web browser.
@@ -1862,7 +2061,7 @@ Run \"npm help docs\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-docs-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-edit--editor ()
   "Set argument --editor."
@@ -1871,26 +2070,7 @@ Run \"npm help docs\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-edit-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm edit")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-edit "npmjs.el" nil t)
 (transient-define-prefix npmjs-edit ()
   "Edit an installed package.
@@ -1906,7 +2086,7 @@ Run \"npm help edit\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-edit-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-exec--call ()
   "Set argument --call."
@@ -1922,26 +2102,7 @@ Run \"npm help edit\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-exec-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm exec")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-exec "npmjs.el" nil t)
 (transient-define-prefix npmjs-exec ()
   "Run a command from a local or remote npm package.
@@ -1970,7 +2131,7 @@ Run \"npm help exec\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-exec-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-explore--shell ()
   "Set argument --shell."
@@ -1979,26 +2140,7 @@ Run \"npm help exec\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-explore-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm explore")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-explore "npmjs.el" nil t)
 (transient-define-prefix npmjs-explore ()
   "Browse an installed package.
@@ -2014,28 +2156,9 @@ Run \"npm help explore\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-explore-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-explain-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm explain")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-explain "npmjs.el" nil t)
 (transient-define-prefix npmjs-explain ()
   "Explain installed packages.
@@ -2055,7 +2178,7 @@ Run \"npm help explain\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-explain-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-fund--which ()
   "Set argument --which."
@@ -2071,26 +2194,7 @@ Run \"npm help explain\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-fund-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm fund")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-fund "npmjs.el" nil t)
 (transient-define-prefix npmjs-fund ()
   "Retrieve funding information.
@@ -2114,28 +2218,9 @@ Run \"npm help fund\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-fund-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-find-dupes-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm find-dupes")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-find-dupes "npmjs.el" nil t)
 (transient-define-prefix npmjs-find-dupes ()
   "Find duplication in the package tree.
@@ -2168,28 +2253,9 @@ Run \"npm help find-dupes\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-find-dupes-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-hook-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm hook")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-hook "npmjs.el" nil t)
 (transient-define-prefix npmjs-hook ()
   "Manage registry hooks.
@@ -2211,7 +2277,7 @@ Run \"npm help hook\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-hook-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-help--viewer ()
   "Set argument --viewer."
@@ -2220,26 +2286,7 @@ Run \"npm help hook\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-help-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm help")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-help "npmjs.el" nil t)
 (transient-define-prefix npmjs-help ()
   "Get help on npm.
@@ -2257,7 +2304,7 @@ Run \"npm help help\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-help-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-init--scope ()
   "Set argument --scope."
@@ -2266,26 +2313,28 @@ Run \"npm help help\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-init-suffix ()
-  :transient t
+(defun npmjs-init-do ()
+  "Initialize new project."
   (interactive)
-  (let* ((cmd "npm init")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+  (let ((args (transient-args
+               transient-current-command)))
+    (let ((dir
+           (file-name-as-directory
+            (read-directory-name "Directory for project "
+                                 (npmjs-get-non-project-root)))))
+      (if (file-exists-p dir)
+          (setq default-directory dir)
+        (when (yes-or-no-p (format
+                            "Create directory %s?" dir))
+          (mkdir dir)
+          (setq default-directory dir)))
+      (let ((default-directory (file-name-as-directory dir)))
+        (npmjs-compile
+         (string-trim
+          (concat "npm init "
+                  (npmjs-default-format-args
+                   args))))))))
+
 ;;;###autoload (autoload 'npmjs-init "npmjs.el" nil t)
 (transient-define-prefix npmjs-init ()
   "Create a package.json file.
@@ -2312,30 +2361,10 @@ Run \"npm help init\" for more info"
    ("f" "force" "--force")
    ("y" "yes" "--yes")]
   ["Actions"
-   ("RET" "Run" npmjs-done)
-   ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-init-suffix)])
+   ("RET" "Run" npmjs-init-do)
+   ("<return>" "Run" npmjs-init-do)
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-install-test-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm install-test")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
 ;;;###autoload (autoload 'npmjs-install-test "npmjs.el" nil t)
 (transient-define-prefix npmjs-install-test ()
   "Install package(s) and run tests.
@@ -2388,7 +2417,7 @@ Run \"npm help install-test\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-install-test-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-install--script-shell ()
   "Set argument --script-shell."
@@ -2397,26 +2426,7 @@ Run \"npm help install-test\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-install-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm install")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 
 ;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
 (transient-define-prefix npmjs-install ()
@@ -2486,7 +2496,7 @@ Run \"npm help install-ci-test\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-install-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-logout--scope ()
   "Set argument --scope."
@@ -2495,26 +2505,7 @@ Run \"npm help install-ci-test\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-logout-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm logout")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-logout "npmjs.el" nil t)
 (transient-define-prefix npmjs-logout ()
   "Log out of the registry.
@@ -2531,7 +2522,7 @@ Run \"npm help logout\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-logout-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-login--auth-type ()
   "Set argument --auth-type."
@@ -2550,26 +2541,7 @@ Run \"npm help logout\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-login-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm login")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-login "npmjs.el" nil t)
 (transient-define-prefix npmjs-login ()
   "Add a registry user account.
@@ -2590,7 +2562,7 @@ Run \"npm help adduser\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-login-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-ls--depth ()
   "Set argument --depth."
@@ -2599,26 +2571,7 @@ Run \"npm help adduser\" for more info"
   :reader 'transient-read-number-N0
   :class 'transient-option)
 
-(transient-define-suffix npmjs-ls-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm ls")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-ls "npmjs.el" nil t)
 (transient-define-prefix npmjs-ls ()
   "List installed packages.
@@ -2657,35 +2610,9 @@ Run \"npm help ls\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-ls-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-argument npmjs-ll--depth ()
-  "Set argument --depth."
-  :description "--depth "
-  :argument "--depth "
-  :class 'transient-option
-  :always-read t)
 
-(transient-define-suffix npmjs-ll-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm ll")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
 ;;;###autoload (autoload 'npmjs-ll "npmjs.el" nil t)
 (transient-define-prefix npmjs-ll ()
   "List installed packages.
@@ -2710,7 +2637,7 @@ Run \"npm help ll\" for more info"
    ("-" npmjs--workspace-option)
    ("o" npmjs--omit-option)
    ("m" npmjs--omit-option)
-   ("d" npmjs-ll--depth)]
+   ("d" npmjs--depth-option)]
   ["Switches"
    ("i" "install-links" "--install-links")
    ("r" "include-workspace-root" "--include-workspace-root")
@@ -2726,28 +2653,9 @@ Run \"npm help ll\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-ll-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-link-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm link")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-link "npmjs.el" nil t)
 (transient-define-prefix npmjs-link ()
   "Symlink a package folder.
@@ -2800,28 +2708,9 @@ Run \"npm help link\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-link-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-owner-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm owner")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-owner "npmjs.el" nil t)
 (transient-define-prefix npmjs-owner ()
   "Manage package owners.
@@ -2848,28 +2737,9 @@ Run \"npm help owner\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-owner-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-outdated-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm outdated")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-outdated "npmjs.el" nil t)
 (transient-define-prefix npmjs-outdated ()
   "Check for outdated packages.
@@ -2896,28 +2766,9 @@ Run \"npm help outdated\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-outdated-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-org-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm org")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-org "npmjs.el" nil t)
 (transient-define-prefix npmjs-org ()
   "Manage orgs.
@@ -2941,28 +2792,9 @@ Run \"npm help org\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-org-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-prune-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm prune")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-prune "npmjs.el" nil t)
 (transient-define-prefix npmjs-prune ()
   "Remove extraneous packages.
@@ -2990,28 +2822,9 @@ Run \"npm help prune\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-prune-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-profile-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm profile")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-profile "npmjs.el" nil t)
 (transient-define-prefix npmjs-profile ()
   "Change settings on your registry profile.
@@ -3034,28 +2847,9 @@ Run \"npm help profile\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-profile-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-prefix-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm prefix")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-prefix "npmjs.el" nil t)
 (transient-define-prefix npmjs-prefix ()
   "Display prefix.
@@ -3074,7 +2868,7 @@ Run \"npm help prefix\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-prefix-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-publish--access ()
   "Set argument --access."
@@ -3090,26 +2884,7 @@ Run \"npm help prefix\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-publish-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm publish")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-publish "npmjs.el" nil t)
 (transient-define-prefix npmjs-publish ()
   "Publish a package.
@@ -3135,28 +2910,9 @@ Run \"npm help publish\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-publish-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-pkg-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm pkg")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-pkg "npmjs.el" nil t)
 (transient-define-prefix npmjs-pkg ()
   "Manages your package.json.
@@ -3183,28 +2939,9 @@ Run \"npm help pkg\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-pkg-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-ping-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm ping")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-ping "npmjs.el" nil t)
 (transient-define-prefix npmjs-ping ()
   "Ping npm registry.
@@ -3220,7 +2957,7 @@ Run \"npm help ping\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-ping-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-pack--pack-destination ()
   "Set argument --pack-destination."
@@ -3229,26 +2966,7 @@ Run \"npm help ping\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-pack-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm pack")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-pack "npmjs.el" nil t)
 (transient-define-prefix npmjs-pack ()
   "Create a tarball from a package.
@@ -3273,7 +2991,7 @@ Run \"npm help pack\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-pack-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-restart--script-shell ()
   "Set argument --script-shell."
@@ -3282,26 +3000,7 @@ Run \"npm help pack\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-restart-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm restart")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-restart "npmjs.el" nil t)
 (transient-define-prefix npmjs-restart ()
   "Restart a package.
@@ -3319,7 +3018,7 @@ Run \"npm help restart\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-restart-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-repo--browser ()
   "Set argument --browser."
@@ -3328,26 +3027,7 @@ Run \"npm help restart\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-repo-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm repo")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-repo "npmjs.el" nil t)
 (transient-define-prefix npmjs-repo ()
   "Open package repository page in the browser.
@@ -3372,28 +3052,9 @@ Run \"npm help repo\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-repo-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-rebuild-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm rebuild")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-rebuild "npmjs.el" nil t)
 (transient-define-prefix npmjs-rebuild ()
   "Rebuild a package.
@@ -3424,7 +3085,7 @@ Run \"npm help rebuild\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-rebuild-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-run-script--script-shell ()
   "Set argument --script-shell."
@@ -3440,26 +3101,7 @@ Run \"npm help rebuild\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-run-script-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm run-script")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
   "Run arbitrary package scripts.
@@ -3486,28 +3128,9 @@ Run \"npm help run-script\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-run-script-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-root-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm root")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-root "npmjs.el" nil t)
 (transient-define-prefix npmjs-root ()
   "Display npm root.
@@ -3523,7 +3146,7 @@ Run \"npm help root\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-root-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-search--searchexclude ()
   "Set argument --searchexclude."
@@ -3539,26 +3162,7 @@ Run \"npm help root\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-search-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm search")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-search "npmjs.el" nil t)
 (transient-define-prefix npmjs-search ()
   "Search for packages.
@@ -3573,6 +3177,14 @@ Options:
 aliases: find, s, se
 
 Run \"npm help search\" for more info"
+  :value (lambda ()
+           (append
+            (unless (npmjs-online-p)
+              (list "--offline"))
+            (list "--parseable"
+                  "--no-color"
+                  "--long")))
+  :incompatible '(("--color" "--no-color"))
   ["Arguments"
    ("r" npmjs--registry-option)
    ("s" npmjs-search--searchexclude)
@@ -3589,9 +3201,9 @@ Run \"npm help search\" for more info"
    ("j" "json" "--json")
    ("L" "long" "--long")]
   ["Actions"
-   ("RET" "Run" npmjs-done)
-   ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-search-suffix)])
+   ("RET" "Run" npmjs-search-package)
+   ("<return>" "Run" npmjs-search-package)
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-set-script--workspace ()
   "Set argument --workspace."
@@ -3600,26 +3212,8 @@ Run \"npm help search\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-set-script-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm set-script")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
+
 ;;;###autoload (autoload 'npmjs-set-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-set-script ()
   "Set tasks in the scripts section of package.json, deprecated.
@@ -3640,28 +3234,9 @@ Run \"npm help set-script\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-set-script-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-set-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm set")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-set "npmjs.el" nil t)
 (transient-define-prefix npmjs-set ()
   "Set a value in the npm configuration.
@@ -3672,28 +3247,9 @@ Run \"npm help set\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-set-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-shrinkwrap-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm shrinkwrap")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-shrinkwrap "npmjs.el" nil t)
 (transient-define-prefix npmjs-shrinkwrap ()
   "Lock down dependency versions for publication.
@@ -3704,7 +3260,7 @@ Run \"npm help shrinkwrap\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-shrinkwrap-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-start--script-shell ()
   "Set argument --script-shell."
@@ -3713,26 +3269,7 @@ Run \"npm help shrinkwrap\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-start-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm start")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-start "npmjs.el" nil t)
 (transient-define-prefix npmjs-start ()
   "Start a package.
@@ -3750,28 +3287,9 @@ Run \"npm help start\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-start-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-stars-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm stars")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-stars "npmjs.el" nil t)
 (transient-define-prefix npmjs-stars ()
   "View packages marked as favorites.
@@ -3787,28 +3305,9 @@ Run \"npm help stars\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-stars-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-star-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm star")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-star "npmjs.el" nil t)
 (transient-define-prefix npmjs-star ()
   "Mark your favorite packages.
@@ -3827,7 +3326,7 @@ Run \"npm help star\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-star-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-stop--script-shell ()
   "Set argument --script-shell."
@@ -3836,26 +3335,7 @@ Run \"npm help star\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-stop-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm stop")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-stop "npmjs.el" nil t)
 (transient-define-prefix npmjs-stop ()
   "Stop a package.
@@ -3873,7 +3353,7 @@ Run \"npm help stop\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-stop-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-test--script-shell ()
   "Set argument --script-shell."
@@ -3882,26 +3362,7 @@ Run \"npm help stop\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-test-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm test")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-test "npmjs.el" nil t)
 (transient-define-prefix npmjs-test ()
   "Test a package.
@@ -3921,28 +3382,9 @@ Run \"npm help test\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-test-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-team-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm team")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-team "npmjs.el" nil t)
 (transient-define-prefix npmjs-team ()
   "Manage organization teams and team memberships.
@@ -3970,7 +3412,7 @@ Run \"npm help team\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-team-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
 (transient-define-argument npmjs-token--cidr ()
   "Set argument --cidr."
@@ -3979,26 +3421,7 @@ Run \"npm help team\" for more info"
   :class 'transient-option
   :always-read t)
 
-(transient-define-suffix npmjs-token-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm token")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-token "npmjs.el" nil t)
 (transient-define-prefix npmjs-token ()
   "Manage your authentication tokens.
@@ -4022,28 +3445,9 @@ Run \"npm help token\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-token-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-unstar-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm unstar")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-unstar "npmjs.el" nil t)
 (transient-define-prefix npmjs-unstar ()
   "Remove an item from your favorite packages.
@@ -4062,28 +3466,9 @@ Run \"npm help unstar\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-unstar-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-unpublish-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm unpublish")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-unpublish "npmjs.el" nil t)
 (transient-define-prefix npmjs-unpublish ()
   "Remove a package from the registry.
@@ -4105,28 +3490,9 @@ Run \"npm help unpublish\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-unpublish-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-uninstall-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm uninstall")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-uninstall "npmjs.el" nil t)
 (transient-define-prefix npmjs-uninstall ()
   "Remove a package.
@@ -4162,28 +3528,9 @@ Run \"npm help uninstall\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-uninstall-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-update-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm update")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-update "npmjs.el" nil t)
 (transient-define-prefix npmjs-update ()
   "Update packages.
@@ -4234,28 +3581,9 @@ Run \"npm help update\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-update-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-view-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm view")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-view "npmjs.el" nil t)
 (transient-define-prefix npmjs-view ()
   "View registry info.
@@ -4269,7 +3597,7 @@ Options:
 aliases: info, show, v
 
 Run \"npm help view\" for more info"
-  ["Arguments"
+  ["npm view"
    ("w" npmjs--workspace-option)]
   ["Switches"
    ("i" "include-workspace-root" "--include-workspace-root")
@@ -4278,28 +3606,9 @@ Run \"npm help view\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-view-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-version-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm version")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 
 (transient-define-argument npmjs-version-option ()
   :class 'transient-switches
@@ -4352,68 +3661,17 @@ Run \"npm help version\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-version-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-whoami-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm whoami")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 ;;;###autoload (autoload 'npmjs-whoami "npmjs.el" nil t)
 (transient-define-prefix npmjs-whoami ()
   "Display npm username."
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-whoami-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-get-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm get")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
-
-(defun npmjs-format-transient-args ()
-  "Return string from current transient arguments."
-  (mapconcat (lambda (it)
-               (let ((opt (string-trim it)))
-                 (if (string-match "\s\t" opt)
-                     (shell-quote-argument opt)
-                   opt)))
-             (remove nil (flatten-list
-                          (transient-args
-                           transient-current-command)))
-             "\s"))
 
 ;;;###autoload (autoload 'npmjs-get "npmjs.el" nil t)
 (transient-define-prefix npmjs-get ()
@@ -4425,28 +3683,9 @@ Run \"npm help get\" for more info"
   ["Actions"
    ("RET" "Run" npmjs-done)
    ("<return>" "Run" npmjs-done)
-   ("C-c C-a" "Show arguments" npmjs-get-suffix)])
+   ("C-c C-a" "Show arguments" npmjs-show-args)])
 
-(transient-define-suffix npmjs-suffix ()
-  :transient t
-  (interactive)
-  (let* ((cmd "npm")
-         (args
-          (transient-args transient-current-command))
-         (formateted-args
-          (mapcar
-           (apply-partially #'format "%s")
-           args)))
-    (message
-     (concat
-      (if cmd
-          (propertize
-           (concat cmd " ")
-           'face 'transient-argument)
-        "")
-      (propertize
-       (string-join formateted-args " ")
-       'face 'success)))))
+
 
 ;;;###autoload (autoload 'npmjs "npmjs.el" nil t)
 (transient-define-prefix npmjs ()
@@ -4463,13 +3702,50 @@ npm help <term>    search for help on <term>
 npm help npm       more involved overview
 
 All commands:"
-  ["NPM commands"
+  [:description
+   (lambda ()
+     (concat "NPM commands: "
+             (let* ((default-global (npmjs-nvm-strip-prefix
+                                     (npmjs-current-default-node-version)))
+                    (current-global
+                     (when (get-buffer (npmjs--get-global-buffer-name))
+                       (ignore-errors
+                         (npmjs-nvm-strip-prefix
+                          (buffer-local-value
+                           'npmjs--current-node-version
+                           (get-buffer
+                            (npmjs--get-global-buffer-name)))))))
+                    (project-node
+                     (ignore-errors
+                       (npmjs-nvm-strip-prefix
+                        (npmjs-nvm-get-nvmrc-required-node-version))))
+                    (curr-node (npmjs-nvm-strip-prefix
+                                npmjs--current-node-version))
+                    (cands
+                     (delq nil (seq-uniq
+                                (list
+                                 default-global
+                                 current-global
+                                 project-node
+                                 curr-node))))
+                    (annotf (lambda (it)
+                              (format (cond ((equal it default-global)
+                                             "(System global %s)")
+                                            ((equal it current-global)
+                                             "(Current global %s)")
+                                            ((equal it project-node)
+                                             "(nvmrc %s) ")
+                                            ((equal it curr-node)
+                                             "(Buffer local node %s) "))
+                                      it))))
+               (mapconcat annotf cands "\s"))))
    [("au" "Run a security audit" npmjs-audit)
     ("ad" "Add a registry user account" npmjs-adduser)
     ("ac" "Set access level on published packages" npmjs-access)
     ("bu" "Report bugs for a package in a web browser" npmjs-bugs)
     ("bi" "Display npm bin folder" npmjs-bin)
-    ("ci" "Clean install a project" npmjs-ci)
+    ("ci" "Clean install a project" npmjs-ci :inapt-if-not
+     npmjs-get-project-root)
     ("ca" "Manipulates packages cache" npmjs-cache)
     ("co" "Manage the npm configuration files" npmjs-config)
     ("dep" "Deprecate a version of a package" npmjs-deprecate)
@@ -4477,9 +3753,11 @@ All commands:"
     ("dit" "Modify package distribution tags" npmjs-dist-tag)
     ("dif" "The registry diff command" npmjs-diff)
     ("doct" "Check your npm environment" npmjs-doctor)
-    ("docs" "Open documentation for a package in a web browser" npmjs-docs)
+    ("docs" "Open documentation for a package in a web browser"
+     npmjs-docs)
     ("ed" "Edit an installed package" npmjs-edit)
-    ("exe" "Run a command from a local or remote npm package" npmjs-exec)
+    ("exe" "Run a command from a local or remote npm package"
+     npmjs-exec)
     ("explo" "Browse an installed package" npmjs-explore)
     ("expla" "Explain installed packages" npmjs-explain)
     ("fu" "Retrieve funding information" npmjs-fund)
@@ -4501,7 +3779,8 @@ All commands:"
     ("pru" "Remove extraneous packages" npmjs-prune)
     ("pro" "Change settings on your registry profile" npmjs-profile)
     ("pre" "Display prefix" npmjs-prefix)
-    ("pu" "Publish a package" npmjs-publish)
+    ("pu" "Publish a package" npmjs-publish :inapt-if-not
+     npmjs-get-project-root)
     ("pk" "Manages your package.json" npmjs-pkg)
     ("pi" "Ping npm registry" npmjs-ping)
     ("pa" "Create a tarball from a package" npmjs-pack)
@@ -4514,20 +3793,29 @@ All commands:"
     ("ro" "Display npm root" npmjs-root)
     ("sea" "Search for packages" npmjs-search)
     ("set" "Set a value in the npm configuration" npmjs-set)
-    ("sh" "Lock down dependency versions for publication" npmjs-shrinkwrap)
-    ("start" "Start a package" npmjs-start)
+    ("sh" "Lock down dependency versions for publication"
+     npmjs-shrinkwrap)
+    ("st" "Start a package" npmjs-start :inapt-if-not
+     (lambda ()
+       (alist-get 'start (alist-get 'scripts (npmjs-get-package-json-alist)))))
     ("&" "View packages marked as favorites" npmjs-stars)
     ("^" "Mark your favorite packages" npmjs-star)
-    ("sto" "Stop a package" npmjs-stop)
+    ("S" "Stop a package" npmjs-stop)
     ("tes" "Test a package" npmjs-test)
-    ("tea" "Manage organization teams and team memberships" npmjs-team)
+    ("tea" "Manage organization teams and team memberships"
+     npmjs-team)
     ("to" "Manage your authentication tokens" npmjs-token)
-    ("uns" "Remove an item from your favorite packages" npmjs-unstar)
+    ("uns" "Remove an item from your favorite packages"
+     npmjs-unstar)
     ("unp" "Remove a package from the registry" npmjs-unpublish)
     ("up" "Update packages" npmjs-update)
     ("vi" "View registry info" npmjs-view)
     ("ve" "Bump a package version" npmjs-version)
-    ("w" "Display npm username" npmjs-whoami)]])
+    ("w" "Display npm username" npmjs-whoami)]
+   [:if npmjs-nvm-path
+        "NVM"
+        ("ni" "Install other node version" npmjs-nvm-install-node-version)
+        ("nl" "List installed node" npmjs-nvm-jump-to-installed-node)]])
 
 (provide 'npmjs)
 ;;; npmjs.el ends here
