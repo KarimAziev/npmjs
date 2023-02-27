@@ -1511,8 +1511,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
   "Set argument --otp."
   :description "One time password "
   :argument "--otp "
-  :class 'transient-option
-  :always-read t)
+  :class 'transient-option)
 
 (transient-define-argument npmjs--depth-option ()
   "Set argument --depth."
@@ -1711,9 +1710,7 @@ Run \"npm help bin\" for more info"
   "Set argument --script-shell."
   :description "--script-shell "
   :argument "--script-shell "
-  :class 'transient-option
-  :always-read t)
-
+  :class 'transient-option)
 
 ;;;###autoload (autoload 'npmjs-ci "npmjs.el" nil t)
 (transient-define-prefix npmjs-ci ()
@@ -3152,15 +3149,13 @@ Run \"npm help root\" for more info"
   "Set argument --searchexclude."
   :description "--searchexclude "
   :argument "--searchexclude "
-  :class 'transient-option
-  :always-read t)
+  :class 'transient-option)
 
 (transient-define-argument npmjs-search--searchopts ()
   "Set argument --searchopts."
   :description "--searchopts "
   :argument "--searchopts "
-  :class 'transient-option
-  :always-read t)
+  :class 'transient-option)
 
 
 ;;;###autoload (autoload 'npmjs-search "npmjs.el" nil t)
@@ -3749,11 +3744,13 @@ All commands:"
     ("ca" "Manipulates packages cache" npmjs-cache)
     ("co" "Manage the npm configuration files" npmjs-config)
     ("dep" "Deprecate a version of a package" npmjs-deprecate)
-    ("ded" "Reduce duplication in the package tree" npmjs-dedupe)
+    ("ded" "Reduce duplication in the package tree" npmjs-dedupe
+     :inapt-if-not
+     npmjs-get-project-root)
     ("dit" "Modify package distribution tags" npmjs-dist-tag)
     ("dif" "The registry diff command" npmjs-diff)
-    ("doct" "Check your npm environment" npmjs-doctor)
-    ("docs" "Open documentation for a package in a web browser"
+    ("do" "Check your npm environment" npmjs-doctor)
+    ("dc" "Open documentation for a package in a web browser"
      npmjs-docs)
     ("ed" "Edit an installed package" npmjs-edit)
     ("exe" "Run a command from a local or remote npm package"
@@ -3766,18 +3763,16 @@ All commands:"
     ("he" "Get help on npm" npmjs-help)
     ("I" "Create a package.json file" npmjs-init)
     ("i" "Install a package" npmjs-install)
-    ("ti" "Install package(s) and run tests"
-     npmjs-install-test)
-    ("logo" "Log out of the registry" npmjs-logout)
-    ("logi" "Add a registry user account" npmjs-login)
+    ("O" "Log out of the registry" npmjs-logout)
+    ("lo" "Add a registry user account" npmjs-login)
     ("ls" "List installed packages" npmjs-ls)
     ("ll" "List installed packages" npmjs-ll)
-    ("li" " Symlink a package folder" npmjs-link)
+    ("li" "Symlink a package folder" npmjs-link)
     ("ow" "Manage package owners" npmjs-owner)
     ("ou" "Check for outdated packages" npmjs-outdated)]
    [("or" "Manage orgs" npmjs-org)
     ("pru" "Remove extraneous packages" npmjs-prune)
-    ("pro" "Change settings on your registry profile" npmjs-profile)
+    ("prs" "Change settings on your registry profile" npmjs-profile)
     ("pre" "Display prefix" npmjs-prefix)
     ("pu" "Publish a package" npmjs-publish :inapt-if-not
      npmjs-get-project-root)
@@ -3788,7 +3783,7 @@ All commands:"
     ("res" "Restart a package" npmjs-restart)
     ("rep" "Open package repository page in the browser" npmjs-repo)
     ("reb" "Rebuild a package" npmjs-rebuild)
-    ("rs" "Run arbitrary package scripts" npmjs-run-script
+    ("ru" "Run arbitrary package scripts" npmjs-run-script
      :inapt-if-not npmjs-get-package-json-path)
     ("ro" "Display npm root" npmjs-root)
     ("sea" "Search for packages" npmjs-search)
