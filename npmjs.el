@@ -74,6 +74,45 @@ among all sesstions."
         (unless (string-empty-p output)
           output)))))
 
+
+;;;###autoload
+(defun npmjs-install-nvm ()
+  "Install nvm."
+  (interactive)
+  (when (yes-or-no-p "Download and install nvm?")
+    (message
+     "npmjs: Loading https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh")
+    (let ((script
+           (with-current-buffer
+               (url-retrieve-synchronously
+                "https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.1/install.sh"
+                'silent 'inhibit-cookies)
+             (goto-char (point-min))
+             (re-search-forward "^$" nil 'move)
+             (forward-char 1)
+             (delete-region (point-min)
+                            (point))
+             (buffer-string))))
+      (message "Installing nvm-sh: %s"
+               (with-temp-buffer
+                 (insert script)
+                 (shell-command-on-region (point-min)
+                                          (point-max)
+                                          "bash")))
+      (npmjs-exec-in-dir (string-join
+                          (list "source" (npmjs-nvm-path) "&&" "nvm"
+                                "install"
+                                "node")
+                          "\s")))))
+
+
+;;;###autoload
+(defun npmjs-ensure-nvm-install ()
+  "Install nvm, node and yarn."
+  (interactive)
+  (unless (npmjs-nvm-path)
+    (npmjs-install-nvm)))
+
 (defun npmjs-nvm-path ()
   "Return path to NVM_DIR if exists."
   (when-let* ((nvm-dir (or (getenv "NVM_DIR")
@@ -103,7 +142,7 @@ Return alist of node versions and aliases."
         (let* ((parts (delete "*" (split-string it nil t)))
                (found (seq-find
                        (apply-partially
-                        'string-match-p
+                        #'string-match-p
                         npmjs-nvm-version-re)
                        parts))
                (meta (string-join (seq-drop (member found parts) 1) "\s")))
@@ -118,7 +157,7 @@ Return alist of node versions and aliases."
               (or npmjs-nvm-remote-node-versions-alist
                   (setq npmjs-nvm-remote-node-versions-alist
                         (npmjs-nvm-ls-remote)))))
-    (let* ((installed (mapcar 'car (npmjs-nvm--installed-versions)))
+    (let* ((installed (mapcar #'car (npmjs-nvm--installed-versions)))
            (default-global (npmjs-nvm-strip-prefix
                             (npmjs-current-default-node-version)))
            (current-global
@@ -171,13 +210,14 @@ Return alist of node versions and aliases."
       (substring-no-properties version 1)
     version))
 
+;;;###autoload
 (defun npmjs-nvm-install-node-version ()
   "Install new node VERSION with CALLBACK."
   (interactive)
   (when-let ((nvm-path (npmjs-nvm-path))
              (version (npmjs-nvm-strip-prefix
                        (npmjs-nvm-read-remote-node-version))))
-    (if (member version (mapcar 'car (npmjs-nvm--installed-versions)))
+    (if (member version (mapcar #'car (npmjs-nvm--installed-versions)))
         (message "This version is installed")
       (npmjs-exec-in-dir (read-string "Run?" (string-join
                                               (list "source" nvm-path "&&"
@@ -223,6 +263,7 @@ Return alist of node versions and aliases."
            (directory-files it t npmjs-nvm-version-re))))
      files)))
 
+;;;###autoload
 (defun npmjs-nvm-jump-to-installed-node ()
   "Read and jump to installed node version."
   (interactive)
@@ -232,6 +273,7 @@ Return alist of node versions and aliases."
              (find-file (cdr cell)))
         (user-error "Not found %s" cell))))
 
+;;;###autoload
 (defun npmjs-nvm-use-other-version ()
   "Read and jump to installed node version."
   (interactive)
@@ -554,7 +596,7 @@ Return full path of containing directory or nil."
          (curr-node npmjs--current-node-version)
          (cands
           (seq-uniq
-           (mapcar 'npmjs-nvm-strip-prefix
+           (mapcar #'npmjs-nvm-strip-prefix
                    (delq nil
                          (list
                           default-global
@@ -581,6 +623,8 @@ Return full path of containing directory or nil."
                            (complete-with-action action
                                                  cands
                                                  str pred)))))))
+
+
 
 (defun npmjs-compile-global (npm-command)
   "Generic compile command for NPM-COMMAND with ARGS functionality."
@@ -609,6 +653,7 @@ Return full path of containing directory or nil."
            npm-command
            (or env process-environment))))
     (npmjs-run-as-comint npm-command process-environment)))
+
 
 (defun npmjs-compile (npm-command &rest args)
   "Generic compile command for NPM-COMMAND with ARGS functionality."
@@ -693,6 +738,18 @@ Return full path of containing directory or nil."
         (setq process (get-buffer-process buffer))
         (set-process-sentinel process #'npmjs--process-sentinel)
         (display-buffer buffer)))))
+
+(defun npmjs-run-compile (npm-command &optional env)
+  "Run compile command for NPM-COMMAND in ENV."
+  (let ((compenv (or env process-environment)))
+    (let* ((command npm-command)
+           (compilation-read-command nil)
+           (compilation-environment compenv)
+           (compile-command command)
+           (compilation-buffer-name-function
+            (lambda (_mode)
+              (npmjs--get-buffer))))
+      (compilation-start (concat "node -v && " command) t))))
 
 (define-derived-mode npmjs-mode
   comint-mode "npmjs"
@@ -878,15 +935,18 @@ INITIAL-INPUT can be given as the initial minibuffer input."
       (with-current-buffer buff
         (npmjs-search-package--forward-line-0 n)))))
 
+
 (defun npmjs-search-package--next-line ()
   "Forward line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
   (npmjs-search-package--forward-line 1))
 
+
 (defun npmjs-search-package--prev-line ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
   (npmjs-search-package--forward-line -1))
+
 
 (defun npmjs-search-package--beg-of-buffer ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
@@ -897,6 +957,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
       (unless (tabulated-list-get-id)
         (forward-line 1)
         (npmjs-search-highlight-current)))))
+
 
 (defun npmjs-search-package--end-of-buffer ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
@@ -917,6 +978,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
             (forward-line -1)
             (npmjs-search-highlight-current)))))))
 
+;;;###autoload
 (defun npmjs-search-package-mark-or-unmark ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
@@ -1011,21 +1073,24 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                ("Description" 50 nil)
                ("Version" 5 nil)])
   (add-hook 'tabulated-list-revert-hook #'npmjs-table--revert nil t)
-  (add-hook 'post-command-hook 'npmjs-search-highlight-current nil t)
+  (add-hook 'post-command-hook #'npmjs-search-highlight-current nil t)
   (setq cursor-type nil)
   (setq tabulated-list-padding 2)
   (setq revert-buffer-function 'npmjs-table--revert)
   (tabulated-list-init-header))
+
 
 (defun npmjs--menu-mark-delete (&optional _num)
   "Mark a gist for deletion and move to the next line."
   (interactive "p")
   (tabulated-list-put-tag "D" t))
 
+
 (defun npmjs--menu-mark-upgrade (&optional _num)
   "Mark a gist for clone and move to the next line."
   (interactive "p")
   (tabulated-list-put-tag "U" t))
+
 
 (defun npmjs--menu-mark-unmark (&optional _num)
   "Clear any mark on a gist and move to the next line."
@@ -1108,24 +1173,26 @@ INITIAL-INPUT can be given as the initial minibuffer input."
 (defun npmjs-alist-to-entries (alist)
   "Transfrom ALIST to tabulated entries."
   (mapcar (lambda (a)
-            (let ((row
-                   (cond ((consp (car-safe a))
-                          (mapcar (lambda (it)
-                                    (or it ""))
-                                  (npmjs--alist-props
-                                   '(name version
-                                          description)
-                                   a)))
-                         (t (or (pcase-let ((`(,name ,version ,type) a))
-                                  (mapcar 'km-s-strip-props
-                                          (list name version (or type ""))))
-                                (pcase-let ((`(,name ,version) a))
-                                  (mapcar 'km-s-strip-props (list name
-                                                                  version
-                                                                  ""))))))))
+            (let
+                ((row
+                  (cond ((consp (car-safe a))
+                         (mapcar (lambda (it)
+                                   (or it ""))
+                                 (npmjs--alist-props
+                                  '(name version
+                                         description)
+                                  a)))
+                        (t (or (pcase-let ((`(,name ,version ,type) a))
+                                 (mapcar #'substring-no-properties
+                                         (list name version (or type ""))))
+                               (pcase-let ((`(,name ,version) a))
+                                 (mapcar #'substring-no-properties (list name
+                                                                         version
+                                                                         ""))))))))
               (list (car row)
-                    (apply 'vector row))))
+                    (apply #'vector row))))
           alist))
+
 (defun npmjs-list-render (buff-name entries)
   "Render ENTRIES in buffer BUFF-NAME."
   (with-current-buffer (get-buffer-create (format buff-name
@@ -1260,11 +1327,11 @@ INITIAL-INPUT can be given as the initial minibuffer input."
         " "))))))
 
 (defun npmjs-get-package-versions (package)
-  "Exec \"yarn info\" for PACKAGE and return list of available versions."
+  "Exec \"npm info\" for PACKAGE and return list of available versions."
   (require 'json)
   (let ((data (npmjs-get-package-info package)))
     (append
-     (mapcar 'cdr (alist-get 'dist-tags data))
+     (mapcar #'cdr (alist-get 'dist-tags data))
      (reverse
       (append
        (alist-get 'versions
@@ -1428,7 +1495,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                   ('npmjs-install
                    (list
                     "npm install"
-                    (funcall-interactively 'npmjs-search-package)))
+                    (funcall-interactively #'npmjs-search-package)))
                   ('npmjs-help "npm help")
                   ('npmjs-hook "npm hook")
                   ('npmjs-find-dupes "npm find-dupes")
@@ -1469,7 +1536,7 @@ INITIAL-INPUT can be given as the initial minibuffer input."
                                                     (vc-root-dir)
                                                     default-directory))))
           (npmjs-compile (read-string "Run: " full-cmd)))))))
-
+;;;###autoload (autoload 'npmjs-show-args "npmjs.el" nil t)
 (transient-define-suffix npmjs-show-args ()
   :transient t
   (interactive)
@@ -2310,6 +2377,7 @@ Run \"npm help help\" for more info"
   :class 'transient-option
   :always-read t)
 
+
 (defun npmjs-init-do ()
   "Initialize new project."
   (interactive)
@@ -2331,6 +2399,7 @@ Run \"npm help help\" for more info"
           (concat "npm init "
                   (npmjs-default-format-args
                    args))))))))
+
 
 ;;;###autoload (autoload 'npmjs-init "npmjs.el" nil t)
 (transient-define-prefix npmjs-init ()
