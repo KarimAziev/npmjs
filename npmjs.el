@@ -3766,7 +3766,7 @@ npm help <term>    search for help on <term>
 npm help npm       more involved overview
 
 All commands:"
-  [:description
+	[:description
    (lambda ()
      (concat "NPM commands: "
              (let* ((default-global (npmjs-nvm-strip-prefix
@@ -3793,89 +3793,89 @@ All commands:"
                                  project-node
                                  curr-node))))
                     (annotf (lambda (it)
-                              (format (cond ((equal it default-global)
-                                             "(System global %s)")
-                                            ((equal it current-global)
-                                             "(Current global %s)")
-                                            ((equal it project-node)
-                                             "(nvmrc %s) ")
-                                            ((equal it curr-node)
-                                             "(Buffer local node %s) "))
-                                      it))))
+                              (format
+															 (cond ((equal it default-global)
+                                      "(System global %s)")
+                                     ((equal it current-global)
+                                      "(Current global %s)")
+                                     ((equal it project-node)
+                                      "(nvmrc %s) ")
+                                     ((equal it curr-node)
+                                      "(Buffer local node %s) "))
+                               it))))
                (mapconcat annotf cands "\s"))))
-   [("au" "Run a security audit" npmjs-audit)
-    ("ad" "Add a registry user account" npmjs-adduser)
-    ("ac" "Set access level on published packages" npmjs-access)
-    ("bu" "Report bugs for a package in a web browser" npmjs-bugs)
-    ("bi" "Display npm bin folder" npmjs-bin)
-    ("ci" "Clean install a project" npmjs-ci :inapt-if-not
-     npmjs-get-project-root)
-    ("ca" "Manipulates packages cache" npmjs-cache)
-    ("co" "Manage the npm configuration files" npmjs-config)
-    ("dep" "Deprecate a version of a package" npmjs-deprecate)
-    ("ded" "Reduce duplication in the package tree" npmjs-dedupe
-     :inapt-if-not
-     npmjs-get-project-root)
-    ("dit" "Modify package distribution tags" npmjs-dist-tag)
-    ("dif" "The registry diff command" npmjs-diff)
-    ("do" "Check your npm environment" npmjs-doctor)
-    ("dc" "Open documentation for a package in a web browser"
-     npmjs-docs)
-    ("ed" "Edit an installed package" npmjs-edit)
-    ("exe" "Run a command from a local or remote npm package"
-     npmjs-exec)
-    ("explo" "Browse an installed package" npmjs-explore)
-    ("expla" "Explain installed packages" npmjs-explain)
-    ("fu" "Retrieve funding information" npmjs-fund)
-    ("fd" "Find duplication in the package tree" npmjs-find-dupes)
-    ("ho" "Manage registry hooks" npmjs-hook)
-    ("he" "Get help on npm" npmjs-help)
-    ("I" "Create a package.json file" npmjs-init)
-    ("i" "Install a package" npmjs-install)
-    ("O" "Log out of the registry" npmjs-logout)
-    ("lo" "Add a registry user account" npmjs-login)
-    ("ls" "List installed packages" npmjs-ls)
-    ("ll" "List installed packages" npmjs-ll)
-    ("li" "Symlink a package folder" npmjs-link)
-    ("ow" "Manage package owners" npmjs-owner)
-    ("ou" "Check for outdated packages" npmjs-outdated)]
-   [("or" "Manage orgs" npmjs-org)
-    ("pru" "Remove extraneous packages" npmjs-prune)
-    ("prs" "Change settings on your registry profile" npmjs-profile)
-    ("pre" "Display prefix" npmjs-prefix)
-    ("pu" "Publish a package" npmjs-publish :inapt-if-not
-     npmjs-get-project-root)
-    ("pk" "Manages your package.json" npmjs-pkg)
-    ("pi" "Ping npm registry" npmjs-ping)
-    ("pa" "Create a tarball from a package" npmjs-pack)
-    ("rm" "Remove a package" npmjs-uninstall)
-    ("res" "Restart a package" npmjs-restart)
-    ("rep" "Open package repository page in the browser" npmjs-repo)
-    ("reb" "Rebuild a package" npmjs-rebuild)
-    ("ru" "Run arbitrary package scripts" npmjs-run-script
-     :inapt-if-not npmjs-get-package-json-path)
-    ("ro" "Display npm root" npmjs-root)
-    ("sea" "Search for packages" npmjs-search)
-    ("set" "Set a value in the npm configuration" npmjs-set)
-    ("sh" "Lock down dependency versions for publication"
-     npmjs-shrinkwrap)
-    ("st" "Start a package" npmjs-start :inapt-if-not
-     (lambda ()
-       (alist-get 'start (alist-get 'scripts (npmjs-get-package-json-alist)))))
-    ("&" "View packages marked as favorites" npmjs-stars)
-    ("^" "Mark your favorite packages" npmjs-star)
-    ("S" "Stop a package" npmjs-stop)
-    ("tes" "Test a package" npmjs-test)
-    ("tea" "Manage organization teams and team memberships"
-     npmjs-team)
-    ("to" "Manage your authentication tokens" npmjs-token)
-    ("uns" "Remove an item from your favorite packages"
-     npmjs-unstar)
-    ("unp" "Remove a package from the registry" npmjs-unpublish)
-    ("up" "Update packages" npmjs-update)
-    ("vi" "View registry info" npmjs-view)
-    ("ve" "Bump a package version" npmjs-version)
-    ("w" "Display npm username" npmjs-whoami)]
+	 [("ac" "access" npmjs-access)
+		("ad" "adduser" npmjs-adduser)
+		("au" "audit" npmjs-audit)
+		("bu" "bugs" npmjs-bugs)
+		("ca" "cache" npmjs-cache)
+		("ci" "ci" npmjs-ci :inapt-if-not npmjs-get-project-root)
+		("co" "completion" npmjs-completion)
+		("cc" "config" npmjs-config)
+		("de" "dedupe" npmjs-dedupe :inapt-if-not npmjs-get-project-root)
+		("dd" "deprecate" npmjs-deprecate)
+		("di" "diff" npmjs-diff)
+		("dt" "dist-tag" npmjs-dist-tag)
+		("do" "docs" npmjs-docs)
+		("Do" "doctor" npmjs-doctor)
+		("ed" "edit" npmjs-edit)
+		("ex" "exec" npmjs-exec)
+		("ee" "explain" npmjs-explain)
+		("Ex" "explore" npmjs-explore)
+		("fi" "find-dupes" npmjs-find-dupes)
+		("fu" "fund" npmjs-fund)
+		("ge" "get" npmjs-get)]
+	 [("he" "help" npmjs-help)
+		("ho" "hook" npmjs-hook)
+		("in" "init" npmjs-init)
+		("ii" "install" npmjs-install)
+		("it" "install-test" npmjs-install-test)
+		("li" "link" npmjs-link)
+		("ll" "ll" npmjs-ll)
+		("lo" "login" npmjs-login)
+		("Lo" "logout" npmjs-logout)
+		("ls" "ls" npmjs-ls)
+		("or" "org" npmjs-org)
+		("ou" "outdated" npmjs-outdated)
+		("ow" "owner" npmjs-owner)
+		("pa" "pack" npmjs-pack)
+		("pi" "ping" npmjs-ping)
+		("pk" "pkg" npmjs-pkg)
+		("pr" "prefix" npmjs-prefix)
+		("pp" "profile" npmjs-profile)
+		("Pr" "prune" npmjs-prune)
+		("pu" "publish" npmjs-publish :inapt-if-not npmjs-get-project-root)
+		("re" "rebuild" npmjs-rebuild)]
+	 [("rr" "repo" npmjs-repo)
+		("Re" "restart" npmjs-restart)
+		("ro" "root" npmjs-root)
+		("ru" "run-script" npmjs-run-script :inapt-if-not npmjs-get-project-root)
+		("se" "search" npmjs-search)
+		("ss" "set" npmjs-set)
+		("sh" "shrinkwrap" npmjs-shrinkwrap)
+		("st" "star" npmjs-star)
+		("St" "stars" npmjs-stars)
+		("sT" "start" npmjs-start :inapt-if-not
+		 (lambda nil
+			 (or
+				(alist-get 'start
+									 (alist-get 'scripts
+															(npmjs-get-package-json-alist)))
+				(when-let ((proj
+										(npmjs-get-project-root)))
+					(file-exists-p
+					 (expand-file-name "server.js" proj))))))
+		("42" "stop" npmjs-stop :inapt-if-not npmjs-get-project-root)
+		("te" "team" npmjs-team)
+		("tt" "test" npmjs-test)
+		("to" "token" npmjs-token)
+		("un" "uninstall" npmjs-uninstall)
+		("uu" "unpublish" npmjs-unpublish)
+		("Un" "unstar" npmjs-unstar)
+		("up" "update" npmjs-update)
+		("ve" "version" npmjs-version)
+		("vi" "view" npmjs-view)
+		("wh" "whoami" npmjs-whoami)]
    [:if npmjs-nvm-path
         "NVM"
         ("ni" "Install other node version" npmjs-nvm-install-node-version)
