@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/npmjs
 ;; Version: 0.1.0-git
 ;; Keywords: tools
-;; Package-Requires: ((emacs "28.1") (transient "0.3.7"))
+;; Package-Requires: ((emacs "28.1") (transient "0.4.0"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -71,7 +71,6 @@ among all sesstions."
 																	"help-search"
 																	"fund"
 																	"search"
-																	"whoami"
 																	"explore"
 																	"unstar"
 																	"pkg")
@@ -88,6 +87,23 @@ among all sesstions."
   "Command to run when recompile and friends are called."
   :group 'npmjs
   :type 'function)
+
+(defcustom npmjs-started-hook nil
+  "Hooks to run after a npmjs process starts."
+  :group 'npmjs
+  :type 'hook)
+
+(defvar npmjs--history nil
+  "History for npmjs invocations.")
+(defcustom npmjs-finished-hook nil
+  "Hooks to run after a npmjs process finishes."
+  :group 'npmjs
+  :type 'hook)
+
+(defcustom npmjs-setup-hook nil
+  "Hooks to run before a npmjs process starts."
+  :group 'npmjs
+  :type 'hook)
 
 (defvar-local npmjs--current-command nil)
 (defvar-local npmjs--current-node-version nil)
@@ -193,7 +209,7 @@ The previous values will be restored upon exit."
     (when (file-exists-p file)
       file)))
 (defconst npmjs-nvm-version-re
-  "v[0-9]+\.[0-9]+\.[0-9]+"
+  "v[0-9]+\\.[0-9]+\\.[0-9]+"
   "Regex matching a Node version.")
 
 (defvar npmjs-nvm-remote-node-versions-alist nil)
@@ -290,7 +306,7 @@ Return alist of node versions and aliases."
     (if (member version (mapcar (lambda (it)
 																	(npmjs-nvm-strip-prefix (car it)))
 																(npmjs-nvm--installed-versions)))
-        (message "This version is installed")
+        (setq npmjs--current-node-version version)
       (npmjs-exec-in-dir (read-string "Run?" (string-join
                                               (list "source" nvm-path "&&"
                                                     "nvm"
@@ -300,6 +316,7 @@ Return alist of node versions and aliases."
                                               "\s"))
                          default-directory
                          (lambda (&rest _)
+													 (setq npmjs--current-node-version version)
                            (npmjs-run-as-comint "node -v"))))))
 
 (defun npmjs-expand-when-exists (filename &optional directory)
@@ -371,13 +388,13 @@ Return alist of node versions and aliases."
        (car b))))
 
 (defun npmjs-nvm-find-exact-version-for (short)
-  "Find most suitable version for SHORT.
+	"Find most suitable version for SHORT.
 
 SHORT is a string containing major and optionally minor version.
 This function will return the most recent version whose major
 and (if supplied, minor) match."
-  (when (and short
-             (string-match-p "v?[0-9]+\\(\.[0-9]+\\(\.[0-9]+\\)?\\)?$" short))
+	(when (and short
+             (string-match-p "v?[0-9]+\\(\\.[0-9]+\\(\\.[0-9]+\\)?\\)?$" short))
     (unless (or (string-prefix-p "v" short)
                 (string-prefix-p "node" short)
                 (string-prefix-p "iojs" short))
@@ -455,7 +472,7 @@ Return a cons cell with version and absolute path."
                             (concat (or (getenv "NVM_DIR")
                                         (expand-file-name "~/.nvm"))
                                     "/\\(?:versions/node/\\|versions/io.js/\\)?")
-                            "v[0-9]+\.[0-9]+\.[0-9]+" "/bin/?$"))
+                            "v[0-9]+\\.[0-9]+\\.[0-9]+" "/bin/?$"))
            (new-bin-path (expand-file-name  "bin/" version-path))
            (paths
             (cons
@@ -762,17 +779,39 @@ If ALL, read all installed versions."
                           "required by (nvmrc) ")
                          ((equal it curr-node)
                           " Buffer local node ")))))
-    (if (<= (length cands) 1)
-        (car cands)
-      (completing-read "Which node to use?"
-                       (lambda (str pred action)
-                         (if (eq action 'metadata)
-                             `(metadata
-                               (annotation-function .
-                                                    ,annotf))
-                           (complete-with-action action
-                                                 cands
-                                                 str pred)))))))
+		(setq npmjs--current-node-version
+					(if (<= (length cands) 1)
+							(car cands)
+						(completing-read "Which node to use?"
+														 (lambda (str pred
+																					action)
+															 (if (eq action
+																			 'metadata)
+																	 `(metadata
+																		 (annotation-function
+																			.
+																			,annotf))
+																 (complete-with-action
+																	action
+																	cands
+																	str
+																	pred))))))))
+
+;;;###autoload
+(defun npmjs-other-node-version ()
+	"Use other node version."
+	(interactive)
+	(npmjs-confirm-node-version t))
+
+;;;###autoload
+(defun npmjs-use-switch-system-node-version (version)
+	"Change internal environment to use VERSION of node."
+	(interactive (list (npmjs-confirm-node-version t)))
+	(let ((vars (npmjs-nvm-get-env-vars version)))
+		(dolist (elem vars)
+			(setenv
+			 (car elem)
+			 (cadr elem)))))
 
 
 
@@ -831,7 +870,8 @@ If ALL, read all installed versions."
                                default-directory
                                (lambda (&rest _)
                                  (npmjs-run-as-comint
-                                  npm-command)))
+                                  npm-command
+																	npmjs--current-node-version)))
           (npmjs-run-as-comint
            npm-command)))
 		(npmjs-run-as-comint npm-command)))
@@ -839,22 +879,8 @@ If ALL, read all installed versions."
 
 (defvar npmjs-last-commands (make-hash-table :test 'equal)
   "Last executed command lines, per project.")
-(defcustom npmjs-started-hook nil
-  "Hooks to run after a npmjs process starts."
-  :group 'npmjs
-  :type 'hook)
 
-(defvar npmjs--history nil
-  "History for npmjs invocations.")
-(defcustom npmjs-finished-hook nil
-  "Hooks to run after a npmjs process finishes."
-  :group 'npmjs
-  :type 'hook)
 
-(defcustom npmjs-setup-hook nil
-  "Hooks to run before a npmjs process starts."
-  :group 'npmjs
-  :type 'hook)
 
 ;;;###autoload
 (defun npmjs-repeat ()
@@ -875,15 +901,15 @@ With a prefix ARG, allow editing."
 
 (defun npmjs-run-as-comint (command &optional version)
 	"Run a npmjs comint session for COMMAND with ARGS and VERSION."
-	(let* ((buffer (npmjs--get-buffer))
+	(let* ((version  (or version
+											 npmjs--current-node-version
+											 (npmjs-nvm-strip-prefix
+												(string-trim (shell-command-to-string "node -v")))))
+				 (buffer (npmjs--get-buffer))
          (process (get-buffer-process buffer)))
 		(with-current-buffer buffer
 			(npmjs-nvm-with-env-vars
-			 (setq npmjs--current-node-version
-						 (or version
-								 npmjs--current-node-version
-								 (npmjs-nvm-strip-prefix
-									(string-trim (shell-command-to-string "node -v")))))
+			 (setq npmjs--current-node-version version)
 			 (when (comint-check-proc buffer)
 				 (unless (or compilation-always-kill
 										 (yes-or-no-p
@@ -892,6 +918,7 @@ With a prefix ARG, allow editing."
 			 (when process
 				 (delete-process process))
 			 (erase-buffer)
+			 (setq npmjs--current-node-version version)
 			 (unless (eq major-mode 'npmjs-mode)
 				 (npmjs-mode))
 			 (compilation-forget-errors)
@@ -952,14 +979,14 @@ With a prefix ARG, allow editing."
 
 
 (defun npmjs--get-global-buffer-name ()
-  "Get a create a suitable compilation buffer."
-  (format "npmjs<global>"))
+	"Get a create a suitable compilation buffer."
+	(format "npmjs<global><%s>" npmjs--current-node-version))
 
 (defun npmjs--get-project-buffer-name ()
 	"Get a create a suitable compilation buffer."
 	(when-let ((name (or (npmjs-project-name)
 											 (npmjs-get-project-root))))
-    (format "npmjs<%s>" name)))
+    (format "npmjs<%s><%s>" name npmjs--current-node-version)))
 
 (defun npmjs--get-buffer ()
   "Get a create a suitable compilation buffer."
@@ -1426,14 +1453,15 @@ If Emacs has libjansson support, parse it with natively compiled function,
 otherwise use the parsing routines from the json library."
 	(require 'json nil t)
 	(if (and (fboundp 'json-parse-string)
-           (fboundp 'json-available-p)
-           (json-available-p))
-      (json-parse-string str
-												 :object-type json-object-type
-												 :array-type json-array-type
-												 :null-object json-null
-												 :false-object json-false)
-    (json-read-from-string str)))
+					 (fboundp 'json-available-p)
+					 (json-available-p))
+			(json-parse-string str
+												 :object-type (or json-object-type 'alist)
+												 :array-type (if (eq json-array-type 'vector)
+																				 'array
+																			 'list))
+		(when (fboundp 'json-read-from-string)
+			(json-read-from-string str))))
 
 (defun npmjs-global-packages ()
 	"Return list of globally installed packages."
@@ -1645,7 +1673,7 @@ otherwise use the parsing routines from the json library."
 (defun npmjs-confirm-package-version (package &optional prompt)
   "Confirm PACKAGE version with PROMPT."
   (let ((version))
-    (unless (string-match-p "[a-z-]+@" package)
+    (unless (string-match-p "[a-z0-9-]+@" package)
       (when-let ((versions (seq-reduce
                             (lambda (acc it)
                               (let ((prefixes '("^" ">="))
@@ -1685,7 +1713,7 @@ otherwise use the parsing routines from the json library."
                       alist))))))
     (completing-read "Script: "
                      (lambda (str pred
-                             action)
+																	action)
                        (if
                            (eq action
                                'metadata)
@@ -1751,6 +1779,45 @@ otherwise use the parsing routines from the json library."
 			(npmjs-compile-global (npmjs-confirm-command cmd args))
 		(npmjs-compile (npmjs-confirm-command cmd args))))
 
+(defun npmjs-group-vectors (arguments &optional height win-width)
+	"Group ARGUMENTS into vector.
+Default value for HEIGHT is `max-mini-window-height',
+and for WIN-WIDTH - window width."
+	(let* ((descriptions
+					(sort
+					 (mapcar #'(lambda
+											 (&rest args)
+											 (length
+												(apply
+												 #'(lambda
+														 (&rest args)
+														 (apply #'concat
+																		(list
+																		 (apply
+																			#'tray-builder-take-key
+																			args)
+																		 (apply
+																			#'tray-builder-take-description
+																			args))))
+												 args)))
+                   arguments)
+           #'>))
+         (longest (+ 10 (car descriptions)))
+         (win-width (or win-width (min (window-width) 140)))
+         (max-cols (/ win-width longest))
+         (count (length arguments))
+         (height (or height
+										 (floor (* max-mini-window-height 100))))
+         (cols (if (>= height count)
+									 1
+								 (/ win-width longest)))
+         (final-cols (min max-cols cols))
+         (final (/ count final-cols)))
+    (mapcar
+     (lambda (it)
+       (apply #'vector it))
+     (seq-split arguments final))))
+
 ;;;###autoload
 (defun npmjs-done ()
 	"Execute npm transient command."
@@ -1762,8 +1829,9 @@ otherwise use the parsing routines from the json library."
 																				transient-current-command)))
           (args (npmjs-format-transient-args)))
 			(message "npmjs-done
-                | Global  | %s"
-               global)
+                | Name  | %s
+                | Args  | %s"
+               name args)
 			(let* ((default-directory (if global
 																		default-directory
 																	(or
@@ -1897,13 +1965,10 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 										 (string-prefix-p "<" (car vect)))
 						(npmjs-parse-hint
 						 (pop vect))))
-		(message "npmjs-parse-help--vector
-              | Hint  | %s"
-             hint)
 	  (setq result
 					(cond ((and (= 2 choices-len)
-											(string-match-p "^-[a-zZ-A]" (car choices))
-											(string-match-p "^--[a-zZ-A]" (car (last choices))))
+											(string-match-p "^-[a-z0-9]" (car choices))
+											(string-match-p "^--[a-z0-9]" (car (last choices))))
 								 (let ((argument (car (last choices))))
 									 (if (not hint)
 											 (list (substring-no-properties argument 2)
@@ -1981,37 +2046,11 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																	',(plist-get
 																		 hint
 																		 :choices))))))
-									 (message "npmjs-parse-help--vector
-                             | Infix  | %s"
-                            infix)
 									 (if inhibit-eval
 											 (list descr name infix)
 										 (eval infix
 													 t)
 										 (list descr name))))
-								;; ((and hint
-								;; 			(listp hint)
-								;; 			option)
-								;;  (let* ((descr (replace-regexp-in-string "^[-]+" "" option))
-								;; 				(name (make-symbol (format "npmjs-%s--%s" cmd descr)))
-								;; 				(infix (if rest
-								;; 									 `(transient-define-infix ,name ()
-								;; 											:class 'transient-option
-								;; 											:argument ,(concat option " ")
-								;; 											:multi-value 'repeat
-								;; 											:choices ',hint)
-								;; 								 `(transient-define-infix ,name ()
-								;; 										:class 'transient-switches
-								;; 										:argument-format
-								;; 										,(concat option " %s")
-								;; 										:argument-regexp
-								;; 										',(regexp-opt hint)
-								;; 										:choices
-								;; 										',hint))))
-								;; 	 (if inhibit-eval
-								;; 			 (list descr name infix)
-								;; 		 (eval infix t)
-								;; 		 (list descr name))))
 								((and (stringp hint)
 											(stringp option))
 								 (list (replace-regexp-in-string "^[-]+" "" option)
@@ -2043,20 +2082,23 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 			(setq curr (string-trim curr))
 			(unless (string-empty-p curr)
 				(cond ((not initted)
-							 (setq descr curr)
-							 (if descr
-									 (setq initted t)))
+							 (setq initted t)
+							 (if (not (string-prefix-p usage-regex curr))
+									 (setq descr curr)
+								 (setq lines (nconc (list curr) lines))
+								 (setq descr cmd)))
 							((and (string-prefix-p usage-regex curr))
 							 (let ((subcommand (substring-no-properties
 																	curr
 																	(length usage-regex))))
-								 (cond ((string-match-p "^[[]?\\(<?[a-z-]+>?\\)\\([\s]|\\|]\\)"
-																				subcommand)
+								 (cond ((string-match-p
+												 "^[[]?\\(<?[a-z0-9-]+>?\\)\\([\s]|\\|]\\)"
+												 subcommand)
 												(let ((cmds))
 													(with-temp-buffer (insert subcommand)
 																						(goto-char (point-min))
 																						(while (re-search-forward
-																										"[[]?\\(<?[a-z-]+>?\\)\\([\s]|\\|]\\)"
+																										"[[]?\\(<?[a-z0-9-]+>?\\)\\([\s]|\\|]\\)"
 																										nil t 1)
 																							(push (match-string-no-properties
 																										 1)
@@ -2067,7 +2109,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																	 :key scmd
 																	 :description (concat cmd " " scmd))
 																	subcommands))))
-											 ((string-match-p "^\\[\\([a-z-Z-A]+|[^\]]+\\)\\]"
+											 ((string-match-p "^\\[\\([a-z0-9-]+|[^\\]]+\\)\\]"
 																				subcommand)
 												(let ((cmds (split-string
 																		 (replace-regexp-in-string "\\[\\|\\]" ""
@@ -2085,7 +2127,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																 :key cmd
 																 :description cmd)
 																subcommands)))
-											 ((string-match-p "^\\[\\([a-z][a-z-Z-A]+\\)\\]"
+											 ((string-match-p "^\\[\\([a-z0-9][a-z0-9-]+\\)\\]"
 																				subcommand)
 												(let* ((parts (split-string subcommand nil t))
 															 (cmds (delq nil
@@ -2099,7 +2141,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																						(seq-take-while
 																						 (apply-partially
 																							#'string-match-p
-																							"^\\[\\([a-z][a-z-Z-A]+\\)\\]")
+																							"^\\[\\([a-z0-9][a-z-Z-A]+\\)\\]")
 																						 parts)))))
 													(dolist (scmd cmds)
 														(push (list
@@ -2112,11 +2154,11 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																 :key cmd
 																 :description cmd)
 																subcommands)))
-											 ((string-match-p "^[a-zZ-A]" subcommand)
+											 ((string-match-p "^[a-z0-9]" subcommand)
 												(let* ((parts (split-string subcommand nil t))
 															 (subcmds (seq-take-while
 																				 (lambda (it)
-																					 (and (string-match-p "^[a-z]" it)
+																					 (and (string-match-p "^[a-z0-9]" it)
 																								(not
 																								 (string-match-p "=" it))))
 																				 parts))
@@ -2132,13 +2174,19 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 																 :cmd full-name
 																 :key name
 																 :description subcommand
-																 :options (list
-																					 (npmjs-parse-help--vector
-																						suboptions
-																						full-name)))
+																 :options (remove nil
+																									(list
+																									 (npmjs-parse-help--vector
+																										suboptions
+																										full-name))))
 																subcommands)))))
 							 (push curr usage))
-							((string-prefix-p "[" curr)
+							((or (string-prefix-p "[" curr)
+									 (and (string-suffix-p "]" curr)
+												(string-match-p "\\[" curr)))
+							 (unless (string-prefix-p "[" curr)
+								 (setq curr (substring-no-properties curr (string-match-p "\\["
+																																					curr))))
 							 (with-temp-buffer
 								 (erase-buffer)
 								 (insert curr)
@@ -2174,39 +2222,61 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 			:subcommands subcommands))))
 
 (defmacro npmjs-parse-help-with-output (output &rest body)
-  "Expand BODY in temp buffer with OUTPUT."
-  (declare (indent 1) (debug t))
-  `(with-temp-buffer
-     (erase-buffer)
-     (save-excursion (insert ,output))
-     ,@body))
+	"Expand BODY in temp buffer with OUTPUT."
+	(declare (indent 1)
+					 (debug t))
+  `(let ((version npmjs--current-node-version))
+		 (with-temp-buffer
+			 (erase-buffer)
+			 (npmjs-nvm-with-env-vars
+				version
+				(save-excursion
+					(insert ,output)))
+			 ,@body)))
 
-(defun npmjs-get-command-spec (command)
-	"Search and parse COMMAND flags using REGEXP and NUM."
+(defun npmjs-get-command-description-raw (command)
+	"Return COMMAND description from help output."
 	(npmjs-parse-help-with-output
 			(shell-command-to-string
 			 "npm -l")
 		(let ((command-re
 					 (concat "^[\s\t]?+" (regexp-quote command) "[:]?[\s][\s]+"))
-					(regexp "^[\s\t]?+\\([a-zZ-A]+[a-zZ-A-0-9_]+\\)[:]?[\s][\s]+"))
+					(regexp "^\\([\s\t]*\\)\\([a-z0-9]+[a-z0-9_-]+\\)[:]?[\s][\s]+"))
 			(when (re-search-forward
 						 command-re nil t 1)
-				(let ((cmd command)
-							(descr-start (point))
-							(description)
+				(let ((descr-start (point))
 							(descr-end))
 					(setq descr-end (or (save-excursion
 																(when-let ((found (re-search-forward
 																									 regexp nil t 1)))
 																	(forward-line -1)
 																	(point)))
+															(save-excursion
+																(let ((col (current-column))
+																			(found))
+																	(when (> col 0)
+																		(while
+																				(when (= 0 (forward-line))
+																					(let* ((beg (point))
+																								 (str (buffer-substring-no-properties
+																											 beg
+																											 (+ beg
+																													col))))
+																						(string-empty-p (string-trim str))))
+																			(setq found (point))))
+																	found))
 															(line-end-position)))
-					(setq description (buffer-substring-no-properties
-														 descr-start
-														 descr-end))
-					(npmjs-parse-help--description
-					 description
-					 cmd))))))
+					(buffer-substring-no-properties
+					 descr-start
+					 descr-end))))))
+
+(defun npmjs-get-command-spec (command)
+	"Pase COMMAND description from help output."
+	(npmjs-nvm-with-current-node-version
+	 (when-let ((description (npmjs-get-command-description-raw command)))
+		 (npmjs-parse-help--description
+			description
+			command))))
 
 (defun npmjs-parse-help--columns (regexp num)
 	"Search and parse COMMAND flags using REGEXP and NUM."
@@ -2222,6 +2292,18 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
                                                  regexp nil t 1)))
                                 (forward-line -1)
                                 (point)))
+														(let ((col (current-column))
+																	(found))
+															(while
+																	(when (= 0 (forward-line))
+																		(let* ((beg (point))
+																					 (str (buffer-substring-no-properties
+																								 beg
+																								 (+ beg
+																										col))))
+																			(string-empty-p (string-trim str))))
+																(setq found (point)))
+															found)
                             (line-end-position)))
         (setq description (buffer-substring-no-properties
                            descr-start
@@ -2358,58 +2440,34 @@ COMMANDS is a list of plists with such props:
 					 (setq sym
 								 (or (cdr (assoc-string name npmjs-map-replace-commands))
 										 (npmjs-eval-symb name
-																					(plist-get commands :options)
-																					(plist-get commands :description))))
+																			(plist-get commands :options)
+																			(plist-get commands :description))))
 					 (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
 							 (append (list (plist-get commands :key) name sym) props)
 						 (list (plist-get commands :key) name sym))))
+				((and (keywordp (car-safe commands))
+							(assoc-string (plist-get commands :cmd)
+														npmjs-map-replace-commands))
+				 (let* ((cmd (plist-get commands :cmd))
+								(name (cdr (assoc-string cmd npmjs-map-replace-commands)))
+								(key (plist-get commands :key)))
+					 (list key cmd name)))
 				(t (and (keywordp (car-safe commands))
 								(plist-get commands :cmd))
-					 (list (plist-get commands :key)
-								 (plist-get commands :cmd)
-								 `(lambda ()
-										(interactive)
-										(npmjs-confirm-and-run
-										 ,(plist-get commands :cmd)))))))
+					 (let* ((cmd (plist-get commands :cmd))
+									(name
+									 (or (cdr (assoc-string cmd npmjs-map-replace-commands))
+											 (make-symbol (replace-regexp-in-string cmd "\s" "-"))))
+									(key (plist-get commands :key)))
+						 (put name 'npm-command cmd)
+						 (fset name
+									 `(lambda ()
+											(interactive)
+											(npmjs-confirm-and-run
+											 "npm"
+											 ,cmd)))
+						 (list key cmd name)))))
 
-(defun npmjs-group-vectors (arguments &optional height win-width)
-	"Group ARGUMENTS into vector.
-Default value for HEIGHT is `max-mini-window-height',
-and for WIN-WIDTH - window width."
-	(let* ((descriptions
-					(sort
-					 (mapcar #'(lambda
-											 (&rest args)
-											 (length
-												(apply
-												 #'(lambda
-														 (&rest args)
-														 (apply #'concat
-																		(list
-																		 (apply
-																			#'tray-builder-take-key
-																			args)
-																		 (apply
-																			#'tray-builder-take-description
-																			args))))
-												 args)))
-                   arguments)
-           #'>))
-         (longest (+ 10 (car descriptions)))
-         (win-width (or win-width (min (window-width) 140)))
-         (max-cols (/ win-width longest))
-         (count (length arguments))
-         (height (or height
-										 (floor (* max-mini-window-height 100))))
-         (cols (if (>= height count)
-									 1
-								 (/ win-width longest)))
-         (final-cols (min max-cols cols))
-         (final (/ count final-cols)))
-    (mapcar
-     (lambda (it)
-       (apply #'vector it))
-     (seq-split arguments final))))
 
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
@@ -2497,34 +2555,108 @@ and for WIN-WIDTH - window width."
 
 (put 'npmjs-run-script 'npm-command "run-script")
 
+(defvar npmjs-man-paths nil)
+
+(defun npmjs-get-man-paths (&optional force)
+	"Return MANPATH with node and npm man pages.
+IF FORCE is non nil, purge cache."
+	(or (and (not force)
+					 npmjs-man-paths)
+			(setq npmjs-man-paths
+						(let* ((files (seq-filter
+													 #'file-directory-p
+													 (mapcar
+														#'directory-file-name
+														(directory-files-recursively
+														 (cdr
+															(assoc
+															 (string-trim
+																(shell-command-to-string
+																 "node -v"))
+															 (npmjs-nvm--installed-versions)))
+														 "\\_<\\(man\\)\\_>"
+														 t))))
+									 (mpath (string-join (append (if (getenv "MANPATH")
+																									 (list (getenv "MANPATH"))
+																								 (process-lines "manpath"))
+																							 (list (string-join
+																											files
+																											path-separator)))
+																			 path-separator)))
+							mpath))))
+
+(defvar manual-program)
+(defvar Man-man-k-use-anchor)
+
+(defun npmjs-man-read-man-entry ()
+	"Read manual entry with extended MANPATH."
+	(let ((prefix "^"))
+		(with-temp-buffer
+			(let ((default-directory "/")
+						(entries))
+				(with-environment-variables (("MANPATH" (or npmjs-man-paths
+																										(npmjs-get-man-paths)))
+																		 ("COLUMNS" "999"))
+					(when (eq 0 (ignore-errors
+												(call-process
+												 "mandb" nil '(t nil) nil
+												 "-c")))
+						(delete-region (point-min)
+													 (point-max))
+						(ignore-errors (call-process
+														manual-program nil '(t nil) nil
+														"-k" (concat
+																	(when (or Man-man-k-use-anchor
+																						(string-equal prefix ""))
+																		"^")
+																	prefix)))
+						(setq entries (split-string (buffer-string) "\n")))
+					(let* ((entry (completing-read "Candidates: "
+																				 entries))
+								 (result (with-temp-buffer (insert entry)
+																					 (when (fboundp 'Man-parse-man-k)
+																						 (car (Man-parse-man-k))))))
+						(man result)))))))
 
 ;;;###autoload
-(defun npmjs-update-manpages ()
-	"Execute COMMAND with ARGS synchronously in environment ENV.
-
-Return stdout output if command existed with zero status, nil otherwise."
+(defun npmjs-man-advice (&optional fn &rest args)
+	"Call FN either with ARGS or with manual entry.
+By default FN is man."
 	(interactive)
-	(let ((mpath (string-join (append (if (getenv "MANPATH")
-																				(list (getenv "MANPATH"))
-																			(process-lines "manpath"))
-																		(list (string-join
-																					 (seq-filter
-																						#'file-directory-p
-																						(mapcar
-																						 #'directory-file-name
-																						 (directory-files-recursively
-																							(cdr
-																							 (assoc
-																								(string-trim
-																								 (shell-command-to-string
-																									"node -v"))
-																								(npmjs-nvm--installed-versions)))
-																							"\\_<\\(man\\)\\_>"
-																							t)))
-																					 path-separator)))
-														path-separator)))
-		(setenv "MANPATH" mpath)))
+	(if args
+			(apply (or fn #'man) args)
+		(let ((prefix "^"))
+			(with-temp-buffer
+				(let ((default-directory "/")
+							(entries))
+					(with-environment-variables (("MANPATH" (or npmjs-man-paths
+																											(npmjs-get-man-paths)))
+																			 ("COLUMNS" "999"))
+						(when (eq 0 (ignore-errors
+													(call-process
+													 "mandb" nil '(t nil) nil
+													 "-c")))
+							(delete-region (point-min)
+														 (point-max))
+							(ignore-errors (call-process
+															manual-program nil '(t nil) nil
+															"-k" (concat
+																		(when (or
+																					 (string-equal prefix ""))
+																			"^")
+																		prefix)))
+							(setq entries (split-string (buffer-string) "\n")))
+						(let* ((entry (completing-read "Candidates: "
+																					 entries))
+									 (result (with-temp-buffer (insert entry)
+																						 (when (fboundp 'Man-parse-man-k)
+																							 (car (Man-parse-man-k))))))
+							(apply (or fn 'man)
+										 (list result)))))))))
+(defvar npmjs-inhibit-cache t)
 
+(defvar npmjs-evaluated-commands (make-hash-table :test 'equal)
+  "Last executed command lines, per project.")
 ;;;###autoload
 (defun npmjs ()
 	"Eval prefix."
@@ -2533,59 +2665,55 @@ Return stdout output if command existed with zero status, nil otherwise."
 	 (or npmjs--current-node-version
 			 (setq npmjs--current-node-version (or npmjs--current-node-version
 																						 (npmjs-confirm-node-version))))
-	 (let* ((output (shell-command-to-string "npm -l"))
-					(title (car
-									(last (split-string output "\n" t))))
-					(description (concat "NPM: "
-															 title))
-					(spec (npmjs-parse-help-with-output
-										output
-									(npmjs-parse-help--columns
-									 "^[\s\t]?+\\([a-zZ-A]+[a-zZ-A-0-9_]+\\)[:]?[\s][\s]+"
-									 1)))
-					(mapped (npmjs-map-commands spec))
-					(groupped (npmjs-group-vectors mapped)))
-		 (call-interactively
-			(npmjs-eval-symb "npm"
-											 (if (npmjs-nvm-path)
-													 (append groupped
-																	 (list
-																		(apply 'vector
-																					 '(("-v"
-																							"Install other node version"
-																							npmjs-nvm-install-node-version)
-																						 ("-i"
-																							"Install other node version"
-																							npmjs-nvm-install-node-version)
-																						 ("-f" "Jump to installed node"
-																							npmjs-nvm-jump-to-installed-node)))))
-												 groupped)
-											 description)))))
+	 (if-let ((prefix (and (not npmjs-inhibit-cache)
+												 (gethash npmjs--current-node-version
+																	npmjs-evaluated-commands))))
+			 (call-interactively prefix)
+		 (let* ((output (shell-command-to-string "npm -l"))
+						(title (car
+										(last (split-string output "\n" t))))
+						(description (concat "NPM: "
+																 title))
+						(spec (npmjs-parse-help-with-output
+											output
+										(npmjs-parse-help--columns
+										 "^\\([\s\t]*\\)\\([a-z0-9]+[a-z0-9_-]+\\)[:]?[\s][\s]+"
+										 2)))
+						(mapped (npmjs-map-commands spec))
+						(groupped (npmjs-group-vectors mapped))
+						(prefix-symb (npmjs-eval-symb "npm"
+																					(if (npmjs-nvm-path)
+																							(append groupped
+																											(list
+																											 (apply #'vector
+																															'(("-o"
+																																 "nvm"
+																																 npmjs-nvm
+																																 :inapt-if-not
+																																 npmjs-nvm-path)))))
+																						groupped)
+																					description)))
+			 (call-interactively prefix-symb)
+			 (puthash npmjs--current-node-version prefix-symb
+								npmjs-evaluated-commands)))))
+
+(defvar npmjs-nvm-suffix `["NVM"
+													 ("I" "Install new node version"
+														npmjs-nvm-install-node-version)
+													 ("u" "Use other node version"
+														npmjs-other-node-version)
+													 ("U" "Use other node version (globally)"
+														npmjs-use-switch-system-node-version)
+													 ("f" "Jump to installed node"
+														npmjs-nvm-jump-to-installed-node)])
 
 ;;;###autoload (autoload 'npmjs-nvm "npmjs.el" nil t)
 (transient-define-prefix npmjs-nvm ()
-	"Npm <command>.
-Usage:
+	"Menu for NVM (node version manager) commands."
+	["nvm dummy menu"])
 
-npm install        install all the dependencies in your project
-npm install <foo>  add the <foo> dependency to your project
-npm test           run this project's tests
-npm run <foo>      run the script named <foo>
-npm <command> -h   quick help on <command>
-npm -l             display usage info for all commands
-npm help <term>    search for help on <term>
-npm help npm       more involved overview
-
-All commands:"
-	[:description
-   (lambda ()
-     (concat "Node: "
-             (npmjs-get-node-version-description)))
-   [:if npmjs-nvm-path
-        "NVM"
-				("-v" "Install other node version" npmjs-nvm-install-node-version)
-        ("-i" "Install other node version" npmjs-nvm-install-node-version)
-        ("-f" "Jump to installed node" npmjs-nvm-jump-to-installed-node)]])
+(transient-insert-suffix 'npmjs-nvm (list 0)
+  npmjs-nvm-suffix)
 
 (provide 'npmjs)
 ;;; npmjs.el ends here
