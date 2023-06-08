@@ -62,6 +62,11 @@ among all sesstions."
   :group 'npmjs
   :type 'directory)
 
+(defcustom npmjs-inhibit-prefix-cache nil
+  "Whether to always reevalulate prefixes. It is mostly for debug purposes."
+  :group 'npmjs
+  :type 'boolean)
+
 (defcustom npmjs-omit-commmands '("stars"
 																	"star"
 																	"completion"
@@ -810,7 +815,9 @@ If ALL, read all installed versions."
 (defun npmjs-other-node-version ()
 	"Use other node version."
 	(interactive)
-	(npmjs-confirm-node-version t))
+	(npmjs-confirm-node-version t)
+	(when transient-current-command
+		(npmjs)))
 
 ;;;###autoload
 (defun npmjs-use-switch-system-node-version (version)
@@ -820,7 +827,8 @@ If ALL, read all installed versions."
 		(dolist (elem vars)
 			(setenv
 			 (car elem)
-			 (cadr elem)))))
+			 (cadr elem)))
+		(npmjs)))
 
 
 
@@ -1775,14 +1783,27 @@ otherwise use the parsing routines from the json library."
                           pred))))))
 
 (defun npmjs-default-format-args (args)
-  "Format ARGS to string."
-  (mapconcat (lambda (it)
+	"Format ARGS to string."
+	(mapconcat (lambda (it)
                (let ((opt (string-trim it)))
-                 (if (string-match "\s\t" opt)
-                     (shell-quote-argument opt)
-                   opt)))
-             (remove nil (flatten-list
-                          args))
+								 (when (string-match "<\\([a-z-0-9@-/]+\\)>" opt)
+									 (setq opt
+												 (with-temp-buffer
+													 (insert opt)
+													 (when (re-search-backward ">" nil t 1)
+														 (forward-char 1)
+														 (if (not (looking-at " "))
+																 (read-string "Value for opt %s" opt)
+															 (skip-chars-forward "\s\t")
+															 (string-trim
+																(buffer-substring-no-properties (point)
+																																(point-max))))))))
+								 (cond ((string-match "\s\t" opt)
+												(shell-quote-argument opt))
+											 (t opt))))
+             (remove nil
+										 (flatten-list
+                      args))
              "\s"))
 
 (defvar npmjs-man-paths nil)
@@ -1857,16 +1878,11 @@ By default FN is man."
 			(apply (or fn #'man) args)
 		(let ((prefix "^"))
 			(npmjs-nvm-with-current-node-version
-			 (message "before temp buff %s %s"(getenv "NVM_BIN")
-								(shell-command-to-string
-								 "node -v"))
 			 (with-temp-buffer
-				 (message "in temp buff %s "(getenv "NVM_BIN"))
 				 (let ((default-directory "/")
 							 (entries))
 					 (with-environment-variables (("MANPATH" (npmjs-get-man-paths t))
 																				("COLUMNS" "999"))
-						 (message "MAN %s" (getenv "MANPATH"))
 						 (when (eq 0 (ignore-errors
 													 (call-process
 														"mandb" nil '(t nil) nil
@@ -1891,11 +1907,12 @@ By default FN is man."
 
 ;; transient
 (defun npmjs-format-transient-args ()
-  "Return string from current transient arguments."
-  (let ((args (transient-args
+	"Return string from current transient arguments."
+	(let ((args (transient-args
                transient-current-command)))
+		(print args)
     (pcase transient-current-command
-      ;; ('npmjs-audit (npmjs-default-format-args
+			;; ('npmjs-audit (npmjs-default-format-args
       ;;                (if-let ((subcommand
       ;;                          (seq-find
       ;;                           (lambda (it)
@@ -2003,8 +2020,6 @@ and for WIN-WIDTH - window width."
 							(append
 							 (npmjs-make-command-name "npm" name
 																				(pcase name
-																					("run-script"
-																					 (npmjs-read-script))
 																					((or "edit" "uninstall")
 																					 (if
 																							 (or global
@@ -2195,36 +2210,6 @@ For example:
 			(cadr class))))
 
 
-(transient-define-infix km-npmjs-version-quote nil
-	:choices
-	'("<newversion>" "major" "minor" "patch" "premajor" "preminor"
-		"prepatch" "prerelease" "--preid=" "<prerelease-id>" "from-git")
-	:class 'transient-switches
-	:argument-format "%s"
-	:argument-regexp
-	"\\(?:--preid=\\|<\\(?:\\(?:newversion\\|prerelease-id\\)>\\)\\|from-git\\|m\\(?:\\(?:aj\\|in\\)or\\)\\|p\\(?:atch\\|re\\(?:m\\(?:\\(?:aj\\|in\\)or\\)\\|patch\\|release\\)\\)\\)")
-
-(transient-define-infix km-npmjs-install-dev nil
-	:choices
-	'("dev" "optional" "peer")
-	:class 'transient-option
-	:argument "--omit "
-	:multi-value 'repeat)
-
-(transient-define-prefix km-npmjs-transient-test-prefix ()
-	[("k" "version" km-npmjs-version-quote)
-	 ("--" "Arguments <command>" "--"
-		:class transient-option
-		:multi-value rest
-		:prompt "Arguments (separated by commas): ")
-	 ("w" "workspace" ("-w" "--workspace ")
-		:class transient-option
-		:argument "--workspace "
-		:multi-value repeat)
-	 ("o" "omit" km-npmjs-install-dev)
-	 ("u" "<user>" "<user> ")]
-	[("RET" "Show args" npmjs-show-args)])
-
 (defun npmjs-eval-infix (name &optional args inhibit-eval)
 	"Define NAME as a transient infix command with ARGS.
 Return list with description and NAME.
@@ -2236,7 +2221,8 @@ If INHIBIT-EVAL no eval."
 										 (list
 											(when (stringp (car args))
 												(car args))
-											(format "%s" name)))))
+											(replace-regexp-in-string "npmjs-" ""
+																								(format "%s" name))))))
 				(pl (if (stringp (car args))
 								(cdr args)
 							args)))
@@ -2261,7 +2247,7 @@ If INHIBIT-EVAL no eval."
 ITEMS can be a vector or list of elements divided with char |."
 	(when-let* ((groupped
 							 (when (seq-find (apply-partially #'equal "|") items)
-								 (npmjs-group-group-with
+								 (npmjs-group-with
 									(lambda (it)
 										(if (stringp it) :choices :args))
 									items)))
@@ -2289,6 +2275,9 @@ ITEMS can be a vector or list of elements divided with char |."
 			((pred proper-list-p)
 			 (nth n list-or-vector)))))
 
+(defun npmjs-parse-no-argument-p (argument)
+	"Check whether ARGUMENT is line --no-[arg]|arg."
+	(string-match-p "--no-" argument))
 
 (defun npmjs-parse-argument (vect)
 	"Parse argument VECT."
@@ -2330,6 +2319,53 @@ ITEMS can be a vector or list of elements divided with char |."
 											 :class 'transient-option
 											 :multi-value 'rest
 											 :prompt "Arguments (separated by commas): "))
+								((guard (and curr (member curr vect)))
+								 (setq value
+											 (concat (or value "")
+															 (string-join
+																(seq-filter 'stringp
+																						(seq-take vect
+																											(seq-position
+																											 vect
+																											 curr)))
+																"")))
+								 (setq vect nil)
+								 (append
+									(list
+									 (or longarg curr)
+									 (if shortarg
+											 (list shortarg longarg)
+										 (or argument curr)))
+									(npmjs-plist-merge
+									 (list
+										:class 'transient-option
+										:prompt value)
+									 extra-props)))
+								((guard
+									(and
+									 (not value)
+									 (string-match-p "^[a-z-0-9]+=\\([a-z-0-9]+|[a-z-0-9|]+\\)$"
+																	 curr)))
+								 (let* ((parts (split-string curr "=" t))
+												(arg (pop parts))
+												(choices (split-string (car parts) "|" t)))
+									 (if extra-props
+											 (append `(,arg
+																 :choices ',choices
+																 :argument ,(format "%s=" curr)
+																 :class 'transient-option)
+															 (mapcar  (lambda (it)
+																					(if (and it
+																									 (not (keywordp it))
+																									 (symbolp it))
+																							`(quote ,it)
+																						it))
+																				extra-props))
+										 `(,arg
+											 :choices ',choices
+											 :class 'transient-switches
+											 :argument-format ,(concat arg "=" "%s")
+											 :argument-regexp ,(regexp-opt choices)))))
 								((guard
 									(and argument
 											 value
@@ -2389,11 +2425,13 @@ ITEMS can be a vector or list of elements divided with char |."
 															:class 'transient-switches
 															:argument-format "%s"
 															:argument-regexp ,(regexp-opt choices))))
-								((guard (and longarg
+								((guard (and argument
 														 (not value)
 														 (not extra-props)))
-								 (list (substring-no-properties argument 2)
-											 (list shortarg longarg)))
+								 (list argument
+											 (if shortarg
+													 (list shortarg argument)
+												 argument)))
 								((guard (and (stringp curr)
 														 (not value)
 														 (not (string-prefix-p "-" value))))
@@ -2412,18 +2450,6 @@ ITEMS can be a vector or list of elements divided with char |."
 														 (equal curr (npmjs-nth 0 value))))
 								 (let ((item (append value nil)))
 									 item))
-								((guard (and (vectorp curr)
-														 (not value)
-														 (member "|" (append curr nil))))
-								 (let* ((l (append curr nil))
-												(choices (seq-filter (lambda (it)
-																							 (and (stringp it)
-																										(not (string= it "|"))))
-																						 l)))
-									 `(:choices ',choices
-															:class 'transient-switches
-															:argument-format "%s"
-															:argument-regexp (regexp-opt choices))))
 								((guard (and (stringp curr)
 														 (npmjs-short-long-option-p curr)
 														 (stringp value)
@@ -2435,12 +2461,40 @@ ITEMS can be a vector or list of elements divided with char |."
 																 (list shortarg (npmjs-ensure-option-ending
 																								 argument)))
 													 (reverse extra-props))))
+								((guard (npmjs-parse-no-argument-p curr))
+								 (let* ((choices (split-string curr "|" t))
+												(filtered (seq-remove (apply-partially
+																							 'string-prefix-p
+																							 "--no-")
+																							choices))
+												(nodubs (seq-uniq filtered)))
+									 (cond ((and value
+															 (> (length filtered)
+																	(length nodubs))
+															 (not (string-match-p value "<")))
+													(let ((final-choices (append
+																								(seq-filter (apply-partially
+																														 'string-prefix-p
+																														 "--no-")
+																														choices)
+																								nodubs
+																								(mapcar (lambda (it)
+																													(concat it " " value))
+																												nodubs))))
+														`(,(car nodubs)
+															:choices ',final-choices
+															:class 'transient-switches
+															:argument-format "%s"
+															:argument-regexp ,(regexp-opt
+																								 final-choices))))
+												 (t
+													`(,(car filtered)
+														:choices ',choices
+														:class 'transient-switches
+														:argument-format "%s"
+														:argument-regexp ,(regexp-opt
+																							 choices))))))
 								(_
-								 (message "npmjs-parse-argument
-                           | Curr         | %s
-                           | Value        | %s
-                           | Extra Props  | %s"
-                          curr value extra-props)
 								 nil)))
 				(when res
 					(push res result))))
@@ -2510,10 +2564,26 @@ STOP-CHAR is used for recoursive purposes."
            (setq node (npmjs-tokenize "}")))
 					("<"
 					 (when-let* ((start (point))
-											 (end (while
-																(when (looking-at "<")
-																	(skip-chars-forward "^>")))))
-						 (setq node (concat "<" (buffer-substring-no-properties start end)))))
+											 (end (progn
+															(skip-chars-forward "^>")
+															(unless (eobp)
+																(when (looking-at ">")
+																	(forward-char 1)
+																	(point))))))
+						 (setq node
+									 (concat "<" (buffer-substring-no-properties start end)))
+						 node))
+					("'"
+					 (when-let* ((start (point))
+											 (end (progn
+															(skip-chars-forward "'")
+															(unless (eobp)
+																(when (looking-at "'")
+																	(forward-char 1)
+																	(point))))))
+						 (setq node
+									 (concat "'" (buffer-substring-no-properties start end)))
+						 node))
           ("["
            (setq node
 								 (apply 'vector
@@ -2622,7 +2692,7 @@ STOP-CHAR is used for recoursive purposes."
 	"Map ALIST of commands and arguments.
 If INHIBIT-EVAL is non nil, don't eval infixes."
 	(mapcar (lambda (it)
-						(npmjs-map-cmd-cell-2 it inhibit-eval))
+						(npmjs-map-command-cell-lines it inhibit-eval))
 					alist))
 
 
@@ -2655,6 +2725,8 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 	(if (npmjs-short-long-option-p str)
 			(reverse (split-string str "|" t))
 		nil))
+
+
 
 (defun npmjs-flatten-vectors (item)
 	"Flattten vector ITEM."
@@ -2718,8 +2790,111 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 														(append (list (string-join left ""))
 																		right)))
 				res))))
+(defun npmjs-make-command-doc (cmd lines)
+	"Make command CMD description from help LINES."
+	(string-join
+	 (seq-filter  (lambda (it)
+									(or
+									 (when cmd
+										 (string-prefix-p
+											(concat "npm " cmd)
+											it))
+									 (and (npmjs-upcased-p it)
+												(not (string-prefix-p
+															"Options:" it))
+												(not (string-prefix-p
+															"Usage:" it))
+												(not
+												 (string-prefix-p
+													"Run"
+													it)))))
+								lines)
+	 "\n"))
 
-(defun npmjs-map-cmd-cell-2 (cell &optional inhibit-eval)
+
+(defun npmjs-join-strings (items)
+	"Recoursively concat list or vector of ITEMS."
+	(seq-reduce (lambda (acc it)
+								(when-let* ((str (if (stringp it)
+																		 it
+																	 (or (npmjs-join-strings it)
+																			 "")))
+														(suffix (if (and (string-match-p "^[a-z-]" str)
+																						 (not (string-empty-p acc)))
+																				" "
+																			"")))
+									(setq acc (concat acc
+																		suffix
+																		str))))
+							(when (not (symbolp items))
+								items)
+							""))
+
+(defun npmjs-premap-options (rawoptions)
+	"Concat RAWOPTIONS."
+	(let ((options)
+				(item))
+		(while (setq item (pop rawoptions))
+			(cond ((and (vectorp item)
+									(stringp (npmjs-nth 0 item))
+									(not (string-prefix-p "-" (npmjs-nth 0 item))))
+						 (let* ((items (seq-take-while
+														(lambda (it)
+															(or (stringp it)
+																	(symbolp it)
+																	(when (and
+																				 (vectorp it)
+																				 (stringp
+																					(npmjs-nth
+																					 0 it)))
+																		(not (string-prefix-p
+																					"-"
+																					(npmjs-nth
+																					 0 it))))))
+														rawoptions))
+										(next-options (seq-drop rawoptions (length items))))
+							 (setq rawoptions next-options)
+							 (let* ((syms (append
+														 (seq-filter 'symbolp (append item nil))
+														 (seq-filter 'symbolp
+																				 items)))
+											(res (delq nil (append (list
+																							(npmjs-join-strings
+																							 (append
+																								(seq-remove 'symbolp
+																														(append item
+																																		nil))
+																								(seq-remove
+																								 'symbolp
+																								 items))))
+																						 syms))))
+								 (push (apply 'vector res)
+											 options))))
+						((and (stringp item))
+						 (let* ((items (seq-take-while 'stringp rawoptions))
+										(next-options (seq-drop rawoptions (length items))))
+							 (setq rawoptions next-options)
+							 (push (vector (concat item (string-join items ""))) options)))
+						((vectorp item)
+						 (push item options))))
+		(reverse options)))
+
+(defun npmjs-map-raw-options (inline-options)
+	"Normalize INLINE-OPTIONS."
+	(mapcar
+	 #'npmjs-normalize-vectors
+	 (seq-filter
+		#'vectorp
+		(mapcar (lambda (it)
+							(pcase it
+								((guard (and (stringp it)
+														 (string-match-p it "^<")
+														 it))
+								 (vector it))
+								(_ it)))
+						(npmjs-premap-options inline-options)))))
+
+(defun npmjs-map-command-cell-lines (cell &optional inhibit-eval)
 	"Parse CELL with command and description lines to options.
 If INHIBIT-EVAL is nil, don't eval infixes."
 	(let ((cmd (car cell))
@@ -2728,13 +2903,13 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 				(common-options)
 				(aliases)
 				(descriptions)
-				(raw-descr)
 				(curr))
 		(while (setq curr (pop lines))
-			(push curr raw-descr)
 			(setq curr (replace-regexp-in-string "[(]same as[ ][^)]+)" "" curr))
+			(setq curr (replace-regexp-in-string "(in package dir)" "" curr))
 			(setq curr (replace-regexp-in-string "[(]with no args,[^)]+)" "" curr))
 			(setq curr (replace-regexp-in-string "[(]See [^)]+)" "" curr))
+			(setq curr (replace-regexp-in-string "[\s]?|[\s]?" "|" curr))
 			(let ((parsed (npmjs-read-line curr)))
 				(pcase-let* ((words
 											(seq-take-while (lambda (it)
@@ -2773,12 +2948,11 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 						 (push key common-options))
 						((or "aliases:"
 								 "alias:")
-						 (let
-								 ((strs (mapcar (apply-partially 'replace-regexp-in-string
-																								 "," "")
-																(delq nil
-																			(flatten-list (list second-word
-																													third-word other))))))
+						 (let ((strs (mapcar (apply-partially 'replace-regexp-in-string
+																									"," "")
+																 (delq nil
+																			 (flatten-list (list second-word
+																													 third-word other))))))
 							 (setq aliases (if aliases (nconc aliases strs)
 															 strs))))
 						((guard (and (stringp first-word)
@@ -2786,24 +2960,15 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 												 second-word
 												 (string= cmd second-word)))
 						 (setq key (replace-regexp-in-string "^npm[ ]" "" key))
-						 (setq rawoptions (mapcar
-															 (lambda (it)
-																 (npmjs-parse-help--vector
-																	(npmjs-normalize-vectors
-																	 it)
-																	key
-																	inhibit-eval))
-															 (seq-filter
-																(lambda (it)
-																	(and (vectorp
-																				it)))
-																(mapcar (lambda (it)
-																					(if
-																							(and (stringp it)
-																									 (string-match-p it "^<"))
-																							(vector it)
-																						it))
-																				rawoptions))))
+						 (setq rawoptions (npmjs-map-raw-options
+															 (npmjs-multi-extract-vector
+																rawoptions)))
+						 (setq rawoptions (mapcar (lambda (it)
+																				(npmjs-parse-help--vector
+																				 it
+																				 key
+																				 inhibit-eval))
+																			rawoptions))
 						 (let ((subcommand-cell (assoc-string key subcommands)))
 							 (if subcommand-cell
 									 (setcdr subcommand-cell
@@ -2823,6 +2988,9 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 												 (it)
 												 (npmjs--plist-remove-nils
 													(list
+													 :description (npmjs-make-command-doc
+																				 (car it)
+																				 (cdr cell))
 													 :cmd (car it)
 													 :key
 													 (car (last (split-string (car it) " " t)))
@@ -2832,13 +3000,20 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 																	(cdr it)
 																	common-options)))))
 											 subcommands))
-		(if (= 1 (length subcommands))
-				(car subcommands)
-			(npmjs--plist-remove-nils (list
-																 :cmd cmd
-																 :description (string-join raw-descr "\n")
-																 :subcommands subcommands
-																 :options common-options)))))
+		(if (not (= (length subcommands) 1))
+				(npmjs--plist-remove-nils (list
+																	 :cmd cmd
+																	 :description (npmjs-make-command-doc
+																								 nil
+																								 (cdr cell))
+																	 :subcommands subcommands
+																	 :options common-options))
+			(let ((spec (car subcommands))
+						(short-descr  (npmjs-make-command-doc
+													 (car cell)
+													 (cdr cell))))
+				(plist-put spec :description short-descr)
+				spec))))
 
 (defmacro npmjs-parse-help-with-output (output &rest body)
 	"Expand BODY in temp buffer with OUTPUT."
@@ -2889,12 +3064,20 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 					 descr-start
 					 descr-end))))))
 
-(defun npmjs-get-command-spec (command)
+(defun npmjs-get-description-spec (command)
 	"Pase COMMAND description from help output."
 	(npmjs-nvm-with-current-node-version
-	 (when-let ((description (npmjs-get-command-description-raw command)))
-		 (npmjs-map-cmd-cell-2 (cons command
-																 (split-string description "[\n]+" t))))))
+	 (seq-remove #'string-empty-p
+							 (split-string (or (npmjs-get-command-description-raw command) "")
+														 "[\n]" t))))
+
+(defun npmjs-get-command-spec (command &optional inhibit-eval)
+	"Pase COMMAND description from help output.
+If INHIBIT-EVAL is non nil, don't eval infixes."
+	(npmjs-map-command-cell-lines (cons
+																 command
+																 (npmjs-get-description-spec command))
+																inhibit-eval))
 
 (defun npmjs-read-line (line)
 	"Tokenize single description LINE."
@@ -2905,7 +3088,7 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 				(npmjs-tokenize))
 		line))
 
-(defun npmjs-group-group-with (fn items &optional transform-fn)
+(defun npmjs-group-with (fn items &optional transform-fn)
 	"Group ITEMS by calling FN with every item.
 FN should return key.
 TRANSFORM-FN should return transformed item."
@@ -3039,7 +3222,6 @@ COMMANDS is a list of plists with such props:
 										 npmjs-omit-commmands))
 					 commands)
 					(lambda (it)
-						
 						(or (plist-get it :key)
 								(plist-get it :cmd)))
 					(lambda (key value)
@@ -3077,7 +3259,7 @@ COMMANDS is a list of plists with such props:
 					 (setq commands
 								 (plist-put commands :options
 														(append
-														 (tray-builder-generate-shortcuts
+														 (npmjs-add-options-shortcuts
 															(if-let ((extra-options
 																				(cdr
 																				 (assoc-string
@@ -3086,9 +3268,7 @@ COMMANDS is a list of plists with such props:
 																	(append extra-options (plist-get
 																												 commands
 																												 :options))
-																(plist-get commands :options))
-															#'car
-															#'npmjs-parse-apply-push)
+																(plist-get commands :options)))
 														 npmjs-options-suffixes)))
 					 (setq sym
 								 (or (cdr (assoc-string name npmjs-map-replace-commands))
@@ -3125,6 +3305,25 @@ COMMANDS is a list of plists with such props:
 						 (list key cmd name))))
 				(t (message "unmatch %s" commands)
 					 commands)))
+
+(defun npmjs-get-option-shortcut-word (option)
+	"Return OPTION description to use in shortcut generation."
+	(let ((description (car option)))
+		(pcase description
+			((pred stringp)
+			 description)
+			((pred symbolp)
+			 (replace-regexp-in-string "^npmjs-" "" (symbol-name (car option)))))))
+
+(defun npmjs-add-options-shortcuts (options)
+	"Add shortcuts to OPTIONS."
+	(tray-builder-generate-shortcuts
+	 options
+	 #'npmjs-get-option-shortcut-word
+	 (lambda (k v)
+		 (pcase (car v)
+			 ("--" v)
+			 (_ (push k v))))))
 
 
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
@@ -3201,19 +3400,16 @@ COMMANDS is a list of plists with such props:
 																	 'scripts
 																	 package-json))))
 			 (let* ((props (npmjs-get-command-spec "run-script"))
-							(options (tray-builder-generate-shortcuts
-												(plist-get props :options)
-												#'car (lambda (k v)
-																(push (concat "-" k) v))))
-							(children options))
+							(options (npmjs-add-options-shortcuts
+												(plist-get props :options)))
+							(children (append options
+																npmjs-options-suffixes)))
 				 (mapcar
 					(apply-partially #'transient-parse-suffix
 													 transient--prefix)
 					children))))])
 
 (put 'npmjs-run-script 'npm-command "run-script")
-
-(defvar npmjs-inhibit-cache t)
 
 (defun npmjs-get-prefix-spec ()
 	"Return cons with description and parsed npm help output."
@@ -3257,7 +3453,8 @@ COMMANDS is a list of plists with such props:
 						(npmjs-map-descriptions-lines (cdr spec)
 																					t)))
 			(message "%s" description)
-			(npmjs-pp new-spec))))
+			(npmjs-pp (list new-spec
+											(npmjs-map-commands new-spec))))))
 
 ;;;###autoload
 (defun npmjs ()
@@ -3267,36 +3464,44 @@ COMMANDS is a list of plists with such props:
 		(or npmjs--current-node-version
 				(setq npmjs--current-node-version (or npmjs--current-node-version
 																							(npmjs-confirm-node-version))))
-		(if-let ((prefix (and (not npmjs-inhibit-cache)
-													(gethash npmjs--current-node-version
-																	 npmjs-evaluated-commands))))
-				(call-interactively prefix)
-			(let* ((output (shell-command-to-string "npm -l"))
-						 (title (car (last (split-string output "[\n]" t))))
-						 (description (concat "NPM: "
-																	title))
-						 (spec
-							(npmjs-map-descriptions-lines
-							 (npmjs-parse-help-with-output
-									 output
-								 (npmjs-parse-columns-to-alist))))
-						 (mapped (npmjs-map-commands spec))
-						 (groupped (npmjs-group-vectors mapped))
-						 (prefix-symb (npmjs-eval-symb "npm"
-																					 (if (npmjs-nvm-path)
-																							 (append groupped
-																											 (list
-																												(apply #'vector
-																															 '(("-o"
-																																	"nvm"
-																																	npmjs-nvm
-																																	:inapt-if-not
-																																	npmjs-nvm-path)))))
-																						 groupped)
-																					 description)))
-				(call-interactively prefix-symb)
-				(puthash npmjs--current-node-version prefix-symb
-								 npmjs-evaluated-commands)))))
+		(let ((npm-version (string-trim (shell-command-to-string
+																		 "npm -v"))))
+			(if-let ((prefix (and (not npmjs-inhibit-prefix-cache)
+														(gethash npm-version
+																		 npmjs-evaluated-commands))))
+					(call-interactively prefix)
+				(let* ((output (shell-command-to-string "npm -l"))
+							 (title (car (last (split-string output "[\n]" t))))
+							 (description (concat "NPM: "
+																		npm-version
+																		" "
+																		title))
+							 (spec
+								(npmjs-map-descriptions-lines
+								 (npmjs-parse-help-with-output
+										 output
+									 (npmjs-parse-columns-to-alist))))
+							 (mapped (npmjs-map-commands spec))
+							 (groupped (npmjs-group-vectors mapped))
+							 (prefix-symb
+								(let ((sym (npmjs-make-symbol "npmjs-" npm-version)))
+									(npmjs-eval-prefix
+									 sym
+									 `([:description
+											,description
+											,@(append
+												 groupped
+												 (list
+													(apply #'vector
+																 '(("-o"
+																		"nvm"
+																		npmjs-nvm
+																		:inapt-if-not
+																		npmjs-nvm-path)))))]))
+									(put sym 'npm-command "npm")
+									sym)))
+					(call-interactively prefix-symb)
+					(puthash npm-version prefix-symb npmjs-evaluated-commands))))))
 
 (defvar npmjs-nvm-suffix `["NVM"
 													 ("I" "Install new node version"
