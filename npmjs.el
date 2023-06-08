@@ -1869,6 +1869,22 @@ IF FORCE is non nil, purge cache."
 																						 (car (Man-parse-man-k))))))
 						(man result)))))))
 
+(defun npmjs-with-man-paths (&optional fn &rest args)
+	"Update mandb and apply FN with ARGS current node version."
+	(npmjs-nvm-with-current-node-version
+	 (with-temp-buffer
+		 (let ((default-directory "/"))
+			 (with-environment-variables (("MANPATH" (npmjs-get-man-paths t))
+																		("COLUMNS" "999"))
+				 (when (eq 0 (ignore-errors
+											 (call-process
+												"mandb" nil '(t nil) nil
+												"-c")))
+					 (delete-region (point-min)
+													(point-max))
+					 (when fn (apply fn args))))))))
+
+
 ;;;###autoload
 (defun npmjs-man-advice (&optional fn &rest args)
 	"Call FN either with ARGS or with manual entry.
@@ -3153,25 +3169,32 @@ TRANSFORM-FN should return transformed item."
 	"Eval prefix with OPTIONS, CMD and SUBCOMMANDS.
 NO-EVAL is used for debug purposes."
 	(let ((name (npmjs-make-symbol "npm" cmd)))
+		(put name 'npm-command cmd)
+		(put name 'man-page (concat "npm-" cmd))
 		(if no-eval
 				(message "Evaluating %s as %s" cmd name)
 			(npmjs-eval-prefix name (if description
 																	`([:description ,description ,@options])
 																`([,@options]))))
-		(put name 'npm-command cmd)
 		name))
 
 ;;;###autoload
 (defun npmjs-eval-prefix (name body)
 	"Eval and call transient prefix with NAME and BODY."
 	(interactive)
-  (eval `(progn (transient-define-prefix ,name ()
-									:value (lambda ()
-													 (unless (npmjs-get-project-root)
-														 (list "--global")))
-                  ,@body)
-                ',name)
-        t))
+	(let ((manpage (get name 'man-page)))
+		(eval `(progn (transient-define-prefix ,name ()
+										:value (lambda ()
+														 (unless (npmjs-get-project-root)
+															 (list "--global")))
+										:show-help (lambda (&rest args)
+																 (message " %s"
+                                          args)
+																 (npmjs-with-man-paths 'transient--show-manpage
+																											 ,manpage))
+										,@body)
+									',name)
+					t)))
 
 (defun npmjs-get-package-json-script (script)
 	"Search for SCRIPT in package.json."
@@ -3329,6 +3352,9 @@ COMMANDS is a list of plists with such props:
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
 	"Run arbitrary package scripts."
+	:man-page "npm-run-script"
+	:show-help (lambda (&rest _)
+							 (npmjs-with-man-paths 'transient--show-manpage "npm-run-script"))
 	[:description
 	 (lambda ()
 		 (when-let* ((package-json-path
@@ -3485,6 +3511,8 @@ COMMANDS is a list of plists with such props:
 							 (groupped (npmjs-group-vectors mapped))
 							 (prefix-symb
 								(let ((sym (npmjs-make-symbol "npmjs-" npm-version)))
+									(put sym 'npm-command "npm")
+									(put sym 'man-page "npm")
 									(npmjs-eval-prefix
 									 sym
 									 `([:description
@@ -3498,7 +3526,6 @@ COMMANDS is a list of plists with such props:
 																		npmjs-nvm
 																		:inapt-if-not
 																		npmjs-nvm-path)))))]))
-									(put sym 'npm-command "npm")
 									sym)))
 					(call-interactively prefix-symb)
 					(puthash npm-version prefix-symb npmjs-evaluated-commands))))))
@@ -3516,7 +3543,7 @@ COMMANDS is a list of plists with such props:
 ;;;###autoload (autoload 'npmjs-nvm "npmjs.el" nil t)
 (transient-define-prefix npmjs-nvm ()
 	"Menu for NVM (node version manager) commands."
-	:man-page "npm"
+	:man-page "node"
 	["nvm dummy menu"])
 
 (transient-insert-suffix 'npmjs-nvm (list 0)
