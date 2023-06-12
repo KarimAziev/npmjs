@@ -2814,7 +2814,9 @@ ITEMS can be a vector or list of elements divided with char |."
                       (cons it
                             (list (npmjs-parse-help--vector it "" t))))
                     (seq-copy npmjs-all-args))))
+
 (defun npmjs-make-infix-switch-name (choices)
+  "Make description from CHOICES."
   (or (car (car (npmjs-group-with (lambda (it)
                                     (car (split-string it "[-=]" nil)))
                                   (mapcar 'npmjs-normalize-description
