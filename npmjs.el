@@ -1676,8 +1676,9 @@ otherwise use the parsing routines from the json library."
          (alist (npmjs-pluck-depenencies (npmjs-global-packages))))
     alist))
 
-(defun npmjs-read-global-packages ()
-  "Read globally installed js packages."
+(defun npmjs-read-global-packages (&optional with-version)
+  "Read globally installed js packages.
+If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
   (npmjs-nvm-with-current-node-version
    (let* ((default-directory
            (expand-file-name (or
@@ -1696,8 +1697,13 @@ otherwise use the parsing routines from the json library."
           (annotated-items (mapcar (lambda (it)
                                      (concat (format "%s" (car it))
                                              (funcall annotf (car it))))
-                                   alist)))
-     (completing-read-multiple prompt annotated-items))))
+                                   alist))
+          (pkgs (completing-read-multiple prompt annotated-items)))
+     (if with-version
+         pkgs
+       (mapcar (lambda (it)
+                 (car (split-string it "@" t)))
+               pkgs)))))
 
 (defun npmjs-s-strip-props (item)
   "If ITEM is string, return it without text properties.
@@ -1929,12 +1935,14 @@ otherwise use the parsing routines from the json library."
 (defun npmjs-view-man-file (file)
   "Run man on FILE."
   (require 'man)
-  (let* ((file file)
-         (viewbuf (get-buffer (concat "*Man " file "*"))))
+  (let* ((topic (shell-quote-argument file))
+         (buff-name (concat "*Man " topic "*"))
+         (viewbuf (get-buffer buff-name)))
     (when viewbuf
       (kill-buffer viewbuf))
     (when (fboundp 'Man-getpage-in-background)
-      (Man-getpage-in-background (shell-quote-argument file)))))
+      (npmjs-nvm-with-current-node-version
+       (Man-getpage-in-background topic)))))
 
 
 (defun npmjs-get-man-paths (&optional force)
@@ -2115,8 +2123,8 @@ By default FN is man."
                                       (reverse parts))))
                  (number-sequence 1 (min len parts-len))))))))
 
-(defun npmjs-key-builder-generate-shortcuts (items &optional key-fn value-fn
-                                                   used-keys)
+(defun npmjs-key-builder--generate-shortcuts (items &optional key-fn value-fn
+                                                   used-keys key-len)
   "Generate shortcuts from list of ITEMS.
 If KEY-FN is nil, ITEMS should be list of strings or symbols.
 If KEY-FN is a function, it will be called with every item of list, and should
@@ -2125,7 +2133,8 @@ If VALUE-FN is nil, result is an alist of generated keys and corresponding
 items.
 If VALUE-FN is non nil, return a list of results of calling VALUE-FN with two
 arguments - generated shortcut and item.
-USED-KEYS is a list of keys that shouldn't be used."
+USED-KEYS is a list of keys that shouldn't be used.
+KEY-LEN is minimal length of keys."
   (let* ((value-fn (or value-fn (lambda (key value)
                                   (if (proper-list-p value)
                                       (append (list key) value)
@@ -2144,13 +2153,14 @@ USED-KEYS is a list of keys that shouldn't be used."
                                                      "Z")))))
          (variants-len (length random-variants))
          (min-len
-          (if used-keys
-              (length (car (seq-sort-by #'length #'> used-keys)))
-            (cond ((>= variants-len total)
-                   1)
-                  ((>= variants-len (/ total 2))
-                   2)
-                  (t 3)))))
+          (or key-len
+              (if used-keys
+                  (length (car (seq-sort-by #'length #'> used-keys)))
+                (cond ((>= variants-len total)
+                       1)
+                      ((>= variants-len (/ total 2))
+                       2)
+                      (t 3))))))
     (let ((shortcuts used-keys)
           (used-words '())
           (all-keys (mapcar (lambda (def)
@@ -2204,6 +2214,20 @@ USED-KEYS is a list of keys that shouldn't be used."
                      (t (cons short def)))
                result)))))
       (reverse result))))
+(defun npmjs-key-builder-generate-shortcuts (items &optional key-fn value-fn
+                                                   used-keys key-len)
+  "Generate shortcuts from list of ITEMS.
+If KEY-FN is nil, ITEMS should be list of strings or symbols.
+If KEY-FN is a function, it will be called with every item of list, and should
+return string that will be as basis for shortcut.
+If VALUE-FN is nil, result is an alist of generated keys and corresponding
+items.
+If VALUE-FN is non nil, return a list of results of calling VALUE-FN with two
+arguments - generated shortcut and item.
+USED-KEYS is a list of keys that shouldn't be used.
+KEY-LEN is minimal length of keys."
+  (npmjs-key-builder--generate-shortcuts items key-fn value-fn
+                                         used-keys key-len))
 
 (defun npmjs-key-builder-take-description (item)
   "Return description from transient ITEM."
@@ -2329,16 +2353,7 @@ and for WIN-WIDTH - window width."
                                    default-directory)))
              (cmd
               (append
-               (npmjs-make-command-name "npm" name
-                                        (pcase name
-                                          ((or "edit" "uninstall" "update")
-                                           (npmjs-read-global-packages)
-                                           (if
-                                               (or global
-                                                   (not
-                                                    (npmjs-get-project-root)))
-                                               (npmjs-read-global-packages)
-                                             (npmjs-read-local-packages))))))))
+               (npmjs-make-command-name "npm" name))))
         (npmjs-confirm-and-run cmd args)))))
 
 ;;;###autoload (autoload 'npmjs-show-args "npmjs.el" nil t)
@@ -2363,24 +2378,6 @@ and for WIN-WIDTH - window width."
   :class 'transient-option
   :reader 'npmjs-workspace-reader)
 
-(defun npmjs-parse-map-vector (vect)
-  "Parse VECT with CMD.
-CMD is used for evaluated infix.
-If INHIBIT-EVAL is non nil, don't eval infixes."
-  (cond ((vectorp vect)
-         (npmjs-parse-map-vector (append vect nil)))
-        ((not vect)
-         nil)
-        ((proper-list-p vect)
-         (mapcar #'npmjs-parse-map-vector vect))
-        ((consp vect)
-         (cons (npmjs-parse-map-vector (car vect))
-               (npmjs-parse-map-vector (cdr vect))))
-        ((and vect
-              (stringp vect))
-         (substring-no-properties vect))
-        ((and vect)
-         vect)))
 
 (defun npmjs-parse-apply-push (key item)
   "Push KEY to ITEM."
@@ -2512,7 +2509,7 @@ If INHIBIT-EVAL no eval."
                             (not	(string-empty-p it))))
                      (list
                       (when (stringp (car args))
-                        (car args))
+                        (car (last (split-string (car args) "-" t))))
                       (replace-regexp-in-string "npmjs-" ""
                                                 (format "%s" name))))))
         (pl (if (stringp (car args))
@@ -2692,7 +2689,7 @@ ITEMS can be a vector or list of elements divided with char |."
                        value
                        (string-match-p "|" value)
                        extra-props))
-                 (append `(,argument
+                 (append `(,(npmjs-normalize-description argument)
                            :choices ',(npmjs-split-argument value)
                            :argument ,argument
                            :class 'transient-option)
@@ -2709,7 +2706,7 @@ ITEMS can be a vector or list of elements divided with char |."
                        (string-match-p "|" value)
                        (not extra-props)))
                  (let ((choices (npmjs-split-argument value)))
-                   `(,argument
+                   `(,(npmjs-normalize-description argument)
                      :choices ',(npmjs-split-argument value)
                      :class 'transient-switches
                      :argument-format ,(concat argument "%s")
@@ -2724,7 +2721,7 @@ ITEMS can be a vector or list of elements divided with char |."
                        (not (string-match-p "|" value))
                        (not vect)))
                  (let* ((long (or argument (npmjs-ensure-option-ending curr)))
-                        (description (replace-regexp-in-string "^[-]+" "" long))
+                        (description (npmjs-normalize-description long))
                         (props (append
                                 (list
                                  description
@@ -2766,25 +2763,7 @@ ITEMS can be a vector or list of elements divided with char |."
                            props)))
                 ((guard (and (stringp curr)
                              (not value)))
-                 (list (replace-regexp-in-string "^[-]+" "" curr) curr))
-                ((guard (and (stringp curr)
-                             (vectorp value)
-                             (equal curr (npmjs-nth 0 value))))
-                 (let ((item (append value nil)))
-                   item))
-                ((guard (and (stringp curr)
-                             (npmjs-short-long-option-p curr)
-                             (stringp value)
-                             extra-props))
-                 (let* ((parts (npmjs-get-long-short-option curr))
-                        (argument (pop parts))
-                        (shortarg (pop parts)))
-                   (append (list (substring-no-properties argument 2)
-                                 (list shortarg (npmjs-ensure-option-ending
-                                                 argument)))
-                           (npmjs-plist-merge
-                            (npmjs-parse-hint value)
-                            (reverse extra-props)))))
+                 (list (npmjs-normalize-description curr) curr))
                 ((guard (npmjs-parse-no-argument-p curr))
                  (let* ((choices (split-string curr "|" t))
                         (filtered (seq-remove (apply-partially
@@ -2835,6 +2814,15 @@ ITEMS can be a vector or list of elements divided with char |."
                       (cons it
                             (list (npmjs-parse-help--vector it "" t))))
                     (seq-copy npmjs-all-args))))
+(defun npmjs-make-infix-switch-name (choices)
+  (or (car (car (npmjs-group-with (lambda (it)
+                                    (car (split-string it "[-=]" nil)))
+                                  (mapcar 'npmjs-normalize-description
+                                          (seq-remove
+                                           (apply-partially 'string-match-p
+                                                            "^-[a-z]\\|--no-")
+                                           choices)))))
+      (npmjs-normalize-description (car choices))))
 
 (defun npmjs-parse-help--vector (vect &optional cmd inhibit-eval)
   "Parse VECT with CMD.
@@ -2850,12 +2838,15 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
            (cond ((or (npmjs-get-keyword-value :argument-format args)
                       (and (npmjs-get-keyword-value :choices args)
                            (npmjs-get-keyword-value :multi-value args)))
-                  (let* ((choices (npmjs-get-keyword-value :choices args))
-                         (basename (car (npmjs-unquote choices))))
+                  (let* ((choices (npmjs-unquote (npmjs-get-keyword-value
+                                                  :choices args)))
+                         (basename (npmjs-make-infix-switch-name choices)))
                     (npmjs-eval-infix (npmjs-make-symbol
                                        "npmjs" cmd
                                        basename)
-                                      args
+                                      (if (stringp (car args))
+                                          args
+                                        (append (list basename) args))
                                       inhibit-eval)))
                  (t args)))
      result)))
@@ -3143,7 +3134,7 @@ STOP-CHAR is used for recoursive purposes."
                               "Usage:" it))
                         (not
                          (string-prefix-p
-                          "Run"
+                          "Run \"npm help"
                           it)))))
                 lines)
    "\n"))
@@ -3309,12 +3300,11 @@ If INHIBIT-EVAL is nil, don't eval infixes."
              (push key common-options))
             ((or "aliases:"
                  "alias:")
-             (let
-                 ((strs (mapcar (apply-partially #'replace-regexp-in-string
-                                                 "," "")
-                                (delq nil
-                                      (flatten-list (list second-word
-                                                          third-word other))))))
+             (let ((strs (mapcar (apply-partially #'replace-regexp-in-string
+                                                  "," "")
+                                 (delq nil
+                                       (flatten-list (list second-word
+                                                           third-word other))))))
                (setq aliases (if aliases (nconc aliases strs)
                                strs))))
             ((guard (and (stringp first-word)
@@ -3322,10 +3312,6 @@ If INHIBIT-EVAL is nil, don't eval infixes."
                          second-word
                          (string= cmd second-word)))
              (setq key (replace-regexp-in-string "^npm[ ]" "" key))
-             ;; (message "npmjs-map-command-cell-lines
-             ;;           | Rawoptions  | %s
-             ;;           | Specifiers  | %s"
-             ;;          rawoptions specifiers)
              (setq rawoptions (append specifiers rawoptions))
              (setq rawoptions (npmjs-map-raw-options
                                (npmjs-multi-extract-vector
@@ -3573,7 +3559,9 @@ COMMANDS is a list of plists with such props:
             (or (plist-get it :key)
                 (plist-get it :cmd)))
           (lambda (key value)
-            (npmjs-map-commands (plist-put value :key key)))))
+            (npmjs-map-commands (plist-put value :key key)))
+          nil
+          2))
         ((and (keywordp (car-safe commands))
               (plist-get commands :subcommands))
          (setq commands
@@ -3587,7 +3575,8 @@ COMMANDS is a list of plists with such props:
                            (lambda (key value)
                              (setq value (plist-put value :key key))
                              (npmjs-map-commands
-                              value)))))
+                              value))
+                           nil)))
          (let ((name (plist-get commands :cmd))
                (key (plist-get commands :key))
                (sym))
@@ -3671,7 +3660,8 @@ COMMANDS is a list of plists with such props:
    (lambda (k v)
      (pcase (car v)
        ("--" v)
-       (_ (push k v))))))
+       (_ (push k v))))
+   nil))
 
 
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
