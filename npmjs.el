@@ -1965,7 +1965,6 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
 
 (defun npmjs-format-args (args)
   "Format ARGS to string."
-  (print args)
   (setq args (npmjs-stringify args))
   (let ((new-args (mapcar
                    (lambda (it)
@@ -1988,7 +1987,6 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
                   (when curr (oref curr command))))
          (args
           (when sym (transient-args sym))))
-    (print args)
     args))
 
 (defvar npmjs-man-paths nil)
