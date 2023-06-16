@@ -2566,20 +2566,22 @@ and for WIN-WIDTH - window width."
 (defun npmjs-stringify (item)
   "Recoursively stringify ITEM."
   (pcase item
+    ((pred not)
+     item)
     ((pred stringp)
      (substring-no-properties item))
     ((pred numberp)
      (number-to-string item))
-    ((pred symbolp)
-     (substring-no-properties (symbol-name item)))
     ((pred vectorp)
      (apply #'vector (mapcar #'npmjs-stringify (append item nil))))
+    ((pred proper-list-p)
+     (mapcar #'npmjs-stringify item))
     ((guard (and (consp item)
                  (atom (cdr item))))
      (cons (npmjs-stringify (car item))
            (npmjs-stringify (cdr item))))
-    ((pred listp)
-     (mapcar #'npmjs-stringify item))
+    ((guard (and item (symbolp item)))
+     (substring-no-properties (symbol-name item)))
     (_ item)))
 
 (defun npmjs-single-completing-read-annotated (&optional prompt collection
