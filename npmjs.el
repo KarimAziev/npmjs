@@ -1,10 +1,10 @@
-;;; npmjs.el --- Command dispatcher for NPM -*- lexical-binding: t; -*-
+;;; npmjs.el --- Command dispatcher for npm package manager -*- lexical-binding: t; -*-
 
 ;; Copyright (C) 2023 Karim Aziiev <karim.aziiev@gmail.com>\
 
 ;; Author: Karim Aziiev <karim.aziiev@gmail.com>
 ;; URL: https://github.com/KarimAziev/npmjs
-;; Version: 0.1.0-git
+;; Version: 0.1.0
 ;; Keywords: tools
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
@@ -26,28 +26,32 @@
 
 ;;; Commentary:
 
-;; Command dispatcher for NPM
+;; Command dispatcher for npm package manager
 
 ;;; Code:
 
 (require 'transient)
 (require 'compile)
-(eval-when-compile (require 'subr-x))
+
+(eval-when-compile
+  (require 'subr-x))
 
 (defvar json-object-type)
 (defvar json-array-type)
 (defvar json-null)
 (defvar json-false)
 
-
 (defcustom npmjs-nvm-dir (or (getenv "NVM_DIR")
                              (expand-file-name "~/.nvm"))
-  "Full path to Nvm installation directory."
+  "Full path to NVM installation directory.
+See https://github.com/nvm-sh/nvm."
   :group 'npmjs
   :type 'directory)
 
+
+
 (defcustom npmjs-inhibit-prefix-cache nil
-  "Whether to always reevalulate prefixes. It is mostly for debug purposes."
+  "Whether to always re-evaluate prefixes. It is mostly for debug purposes."
   :group 'npmjs
   :type 'boolean)
 
@@ -101,16 +105,17 @@ If a function, it will be called with one argument - a formatted string."
 
 (defvar-local npmjs--current-command nil)
 (defvar-local npmjs--current-node-version nil)
+(defvar-local npmjs-current-descriptions-alist nil)
+(defvar npmjs-descriptions-alist nil)
 
-;; common utils
-
-(defun npmjs-message (string &rest args)
-  "Apply `npmjs-message-function' with ARGS.
+;; common utilities
+(defun npmjs-message (string &rest arguments)
+  "Apply `npmjs-message-function' with ARGUMENTS.
 The first argument STRING is a format control string.
 The other arguments are substituted into it to make the result, a string."
   (when npmjs-message-function
     (funcall npmjs-message-function
-             (concat "npmjs: " (apply #'format string args)))))
+             (concat "npmjs: " (apply #'format string arguments)))))
 
 (defun npmjs--plist-remove-nils (plist)
   "Return the keys in PLIST."
@@ -135,12 +140,12 @@ The other arguments are substituted into it to make the result, a string."
 
 (eval-and-compile
   (defun npmjs--expand (init-fn)
-  "If INIT-FN is a non-quoted symbol, add a sharp quote.
+    "If INIT-FN is a non-quoted symbol, add a sharp quote.
 Otherwise, return it as is."
-  (setq init-fn (macroexpand init-fn))
-  (if (symbolp init-fn)
-      `(#',init-fn)
-    `(,init-fn))))
+    (setq init-fn (macroexpand init-fn))
+    (if (symbolp init-fn)
+        `(#',init-fn)
+      `(,init-fn))))
 
 (defmacro npmjs--compose (&rest functions)
   "Return right-to-left composition from FUNCTIONS."
@@ -149,7 +154,7 @@ Otherwise, return it as is."
            (indent defun)
            (side-effect-free t))
   (setq functions (reverse functions))
-  (let ((args-var (make-symbol "args")))
+  (let ((args-var (make-symbol "arguments")))
     `(lambda (&rest ,args-var)
        ,@(let ((init-fn (pop functions)))
            (list
@@ -160,7 +165,7 @@ Otherwise, return it as is."
              `(apply ,@(npmjs--expand init-fn) ,args-var)))))))
 
 (defmacro npmjs--cond (&rest pairs)
-  "Return a function that expands a list of PAIRS to cond clauses.
+  "Return a function that expands a list of PAIRS to `cond' clauses.
 Every pair should be either:
 - a vector of [predicate transformer],
 - a list of (predicate transformer).
@@ -168,8 +173,8 @@ Every pair should be either:
 The predicate can also be t.
 
 All of the arguments to function are applied to each of the predicates in turn
-until one returns a \"truthy\" value, at which point fn returns the result of
-applying its arguments to the corresponding transformer."
+until one returns a \"truthy\" value, at which point the function
+returns the result of applying its arguments to the corresponding transformer."
   (declare (pure t)
            (indent defun)
            (side-effect-free error-free))
@@ -178,7 +183,7 @@ applying its arguments to the corresponding transformer."
                             (apply #'vector it)
                           it))
                       pairs))
-  (let ((args (make-symbol "args")))
+  (let ((args (make-symbol "arguments")))
     `(lambda (&rest ,args)
        (cond ,@(mapcar (lambda (v)
                          (list (if (eq (aref v 0) t) t
@@ -199,7 +204,6 @@ applying its arguments to the corresponding transformer."
                         `(,v ,it)
                       `(funcall ,v ,it)))
                   functions)))))
-
 
 (defmacro npmjs--and (&rest functions)
   "Return an unary function which invoke FUNCTIONS until first nil result."
@@ -227,7 +231,7 @@ at the values with which this function was called."
                    `(apply ,fn (append pre-args (list ,@args))))))))
 
 (defmacro npmjs--converge (combine-fn &rest functions)
-  "Return a function to apply COMBINE-FN with the results of branching FUNCTIONS.
+  "Make a function to apply COMBINE-FN with the results of branching FUNCTIONS.
 If the first element of FUNCTIONS is a vector, it will be used instead.
 
 Example:
@@ -246,6 +250,18 @@ Result: \"JOHNjohn\"."
                      (append (car functions) nil)
                    functions))))))
 
+(defmacro npmjs-parse-help-with-output (output &rest body)
+  "Expand BODY in temp buffer with OUTPUT."
+  (declare (indent 1)
+           (debug t))
+  `(let ((version npmjs--current-node-version))
+     (with-temp-buffer
+       (erase-buffer)
+       (npmjs-nvm-with-env-vars
+         version
+         (save-excursion
+           (insert ,output)))
+       ,@body)))
 
 (defun npmjs-exec-with-args (command &rest args)
   "Run a shell COMMAND with ARGS."
@@ -262,7 +278,10 @@ Result: \"JOHNjohn\"."
         (unless (string-empty-p output)
           output)))))
 
-;; nvm utils
+;; nvm utilities
+(defconst npmjs-nvm-version-re
+  "v[0-9]+\\.[0-9]+\\.[0-9]+"
+  "Regex matching a Node version.")
 
 (defmacro npmjs-nvm-with-env-vars (version &rest body)
   "Set nvm variables for node VERSION in the environment and execute BODY.
@@ -282,7 +301,6 @@ The previous values will be restored upon exit."
        (setenv (car elem)
                (cadr elem)))
      ,@body))
-
 
 (defmacro npmjs-nvm-with-current-node-version (&rest body)
   "Set nvm variables for node VERSION in the environment and execute BODY.
@@ -311,10 +329,6 @@ The previous values will be restored upon exit."
               (file (expand-file-name "nvm.sh" nvm-dir)))
     (when (file-exists-p file)
       file)))
-
-(defconst npmjs-nvm-version-re
-  "v[0-9]+\\.[0-9]+\\.[0-9]+"
-  "Regex matching a Node version.")
 
 (defvar npmjs-nvm-remote-node-versions-alist nil)
 
@@ -395,18 +409,16 @@ Return alist of node versions and aliases."
                                                  str pred)))))))
 
 (defun npmjs-nvm-strip-prefix (version)
-  "Stip prefix from VERSION, e.g. v1.0.0 to 1.0.0."
+  "Strip prefix from VERSION, e.g. v1.0.0 to 1.0.0."
   (if (and version (string-match-p npmjs-nvm-version-re version))
       (substring-no-properties version 1)
     version))
-
 
 (defun npmjs-expand-when-exists (filename &optional directory)
   "Expand FILENAME to DIRECTORY and return result if exists."
   (when-let ((file (expand-file-name filename directory)))
     (when (file-exists-p file)
       file)))
-
 
 (defun npmjs-nvm--installed-versions-dirs ()
   "Return list of directories with installed versions of node."
@@ -423,16 +435,16 @@ Return alist of node versions and aliases."
                                npmjs-nvm-dir)))))))
     (mapcan
      (lambda (it)
-       (when-let ((name (when (file-directory-p it)
-                          (file-name-nondirectory
-                           (directory-file-name
-                            it)))))
+       (when-let ((name
+                   (when (file-directory-p it)
+                     (file-name-nondirectory
+                      (directory-file-name
+                       it)))))
          (if (string-match-p (concat npmjs-nvm-version-re "$")
                              name)
              (list it)
            (directory-files it t npmjs-nvm-version-re))))
      files)))
-
 
 (defun npmjs-nvm--installed-versions ()
   "Return list of directories with installed versions of node."
@@ -451,6 +463,7 @@ Return alist of node versions and aliases."
                (car version))
            (npmjs-nvm--version-match-p (cdr matcher)
                                        (cdr version)))))
+
 (defun npmjs-nvm-version-compare (a b)
   "Comparator for sorting NVM versions, return t if A < B."
   (if (eq (car a)
@@ -492,11 +505,13 @@ and (if supplied, minor) match."
            (car (sort possible-versions
                       (lambda (a b)
                         (not (npmjs-nvm-version-compare
-                              (npmjs-nvm--version-from-string (car a))
-                              (npmjs-nvm--version-from-string (car b)))))))))))))
+                              (npmjs-nvm--version-from-string
+                               (car a))
+                              (npmjs-nvm--version-from-string
+                               (car b)))))))))))))
 
 (defun npmjs-nvm-get-nvmrc-required-node-version ()
-  "Lookup and read .nvmrc file."
+  "Lookup and read `.nvmrc' file."
   (when-let ((nvmrc (locate-dominating-file default-directory ".nvmrc")))
     (with-temp-buffer (insert-file-contents
                        (expand-file-name ".nvmrc" nvmrc))
@@ -519,17 +534,15 @@ Return a cons cell with version and absolute path."
                           (annotation-function .
                                                (lambda
                                                  (it)
-                                                 (when
-                                                     (equal
-                                                      it
-                                                      ,default-version)
+                                                 (when (equal
+                                                        it
+                                                        ,default-version)
                                                    " (default)"))))
                       (complete-with-action action
                                             alist
                                             str pred)))
                   nil t))
     (cons choice (cdr (assoc choice alist)))))
-
 
 (defun npmjs-nvm-get-env-vars (version)
   "Return alist of new environment for node VERSION."
@@ -561,7 +574,6 @@ Return a cons cell with version and absolute path."
            (flags (append env-flags (list new-path))))
       flags)))
 
-
 (defun npmjs-nvm-get-env-for-node (version)
   "Return alist of new environment for node VERSION."
   (when-let* ((flags (npmjs-nvm-get-env-vars version)))
@@ -580,16 +592,6 @@ Return a cons cell with version and absolute path."
      (string-trim
       (shell-command-to-string
        "node -v")))))
-
-(defun npmjs-get-current-global-version ()
-  "Return `npmjs--current-node-version' either from project or globally."
-  (or
-   npmjs--current-node-version
-   (when-let ((buff (get-buffer (or
-                                 (npmjs--get-project-buffer-name)
-                                 (npmjs--get-global-buffer-name)))))
-     (buffer-local-value 'npmjs--current-node-version buff))))
-
 
 (defun npmjs-confirm-node-version (&optional all)
   "Confirm which node version to use.
@@ -667,7 +669,6 @@ If ALL, read all installed versions."
                          (lambda (&rest _)
                            (setq npmjs--current-node-version version)
                            (npmjs-run-as-comint "node -v"))))))
-
 
 (defun npmjs--install-nvm ()
   "Install nvm."
@@ -793,20 +794,33 @@ JSON-TYPE must be one of `alist', `plist', or `hash-table'."
            (hash-table-keys npmjs-json-hash))
     (remhash key npmjs-json-hash)))
 
+(defun npmjs-get-project-root ()
+  "Look up directory hierarchy for directory containing package.json.
+Return full path of containing directory or nil."
+  (locate-dominating-file default-directory "package.json"))
+
 (defun npmjs-get-package-json-path ()
   "Look up directory hierarchy for directory containing package.json.
 Return absolute path to package.json or nil."
   (when-let ((project-root (npmjs-get-project-root)))
-    (expand-file-name "package.json"
-                      project-root)))
-
+    (expand-file-name "package.json" project-root)))
 
 (defun npmjs-get-package-json-alist ()
-  "Return list of globally installed packages."
+  "Return a JSON representation of nearest package.json in alist format."
   (when-let ((package-json-file (npmjs-get-package-json-path)))
     (ignore-errors (npmjs-read-json package-json-file
                                     'alist))))
 
+(defun npmjs-get-package-json-scripts ()
+  "Return alist of scripts in the nearest package.json.
+Every script is a cons cell, where `car' is a symbol, and `cdr' is a string."
+  (alist-get 'scripts (npmjs-get-package-json-alist)))
+
+(defun npmjs-get-package-json-script (script)
+  "Search for SCRIPT in package.json.
+SCRIPT should be a symbol."
+  (alist-get script
+             (npmjs-get-package-json-scripts)))
 
 (defun npmjs-find-exec-nodejs (program)
   "Find executable PROGRAM in current node version."
@@ -817,15 +831,18 @@ Return absolute path to package.json or nil."
                               (or (npmjs-nvm-with-current-node-version
                                    (parse-colon-path (getenv "PATH")))
                                   (executable-find "node")))))
-(defun npmjs-find-exec-npm ()
-  "Find executable PROGRAM in current node version."
-  (seq-find (lambda (it)
-              (and (string-match-p "/node/" it)
-                   (string-match-p "/bin/" it)))
-            (or (npmjs-nvm-with-current-node-version
-                 (parse-colon-path (getenv "PATH")))
-                (executable-find "npm"))))
 
+(defun npmjs-call-process (command &rest args)
+  "Execute COMMAND with ARGS synchronously.
+
+Return stdout output if command existed with zero status, nil otherwise."
+  (with-temp-buffer
+    (let ((status (apply #'call-process command nil t nil
+                         (flatten-list args))))
+      (let ((result (string-trim (buffer-string))))
+        (if (zerop status)
+            result
+          (npmjs-message result) nil)))))
 
 (defun npmjs-exec-in-dir (command &optional directory callback)
   "Execute COMMAND in PROJECT-DIR.
@@ -874,15 +891,6 @@ Invoke CALLBACK without args."
       (require 'comint)
       (when (fboundp 'comint-output-filter)
         (set-process-filter proc #'comint-output-filter)))))
-
-
-
-(defun npmjs-get-project-root ()
-  "Look up directory hierarchy for directory containing package.json.
-Return full path of containing directory or nil."
-  (locate-dominating-file
-   default-directory
-   "package.json"))
 
 (defun npmjs-get-workspaces ()
   "Look up directory hierarchy for directories containing package.json.
@@ -1012,7 +1020,6 @@ Return list of project roots."
            npm-command)))
     (npmjs-run-as-comint npm-command)))
 
-
 (defvar npmjs-last-commands (make-hash-table :test 'equal)
   "Last executed command lines, per project.")
 
@@ -1034,8 +1041,10 @@ With a prefix ARG, allow editing."
      command)))
 
 (defun npmjs-run-as-comint (command &optional version)
-  "Run a npmjs comint session for COMMAND with ARGS and VERSION."
-  (let* ((version  (or version
+  "Run a npmjs command interpreter session for COMMAND with ARGS and VERSION."
+  (let* ((default-directory (or (npmjs-get-project-default-directory)
+                                default-directory))
+         (version  (or version
                        npmjs--current-node-version
                        (npmjs-nvm-strip-prefix
                         (string-trim (shell-command-to-string "node -v")))))
@@ -1073,8 +1082,14 @@ With a prefix ARG, allow editing."
           (set-process-filter process #'comint-output-filter))
         (set-process-sentinel process
                               #'npmjs--process-sentinel)))
-    (unless (get-buffer-window buffer)
-      (pop-to-buffer buffer))))
+    (unless (and (get-buffer-window buffer)
+                 (window-live-p (get-buffer-window buffer)))
+      (with-selected-window (or (window-right (minibuffer-selected-window))
+                                (window-left (minibuffer-selected-window))
+                                (window-right (selected-window))
+                                (window-left (selected-window))
+                                (split-window-sensibly))
+        (pop-to-buffer-same-window buffer t)))))
 
 (defun npmjs-run-compile (npm-command &optional env)
   "Run compile command for NPM-COMMAND in ENV."
@@ -1104,6 +1119,7 @@ With a prefix ARG, allow editing."
       (define-key map [remap project-compile]
                   npmjs-compile-command))
     map))
+
 ;;;###autoload
 (define-derived-mode npmjs-mode
   comint-mode "npmjs"
@@ -1122,95 +1138,213 @@ With a prefix ARG, allow editing."
 
 (defun npmjs--get-project-buffer-name ()
   "Get a create a suitable compilation buffer."
-  (when-let ((name (or (npmjs-project-name)
-                       (npmjs-get-project-root))))
-    (format "npmjs<%s><%s>" name npmjs--current-node-version)))
+  (when-let ((name (npmjs-get-project-root)))
+    (format "npmjs<%s>" (replace-regexp-in-string "^~/\\|/$" "" name))))
+
+(defun npmjs-get-project-default-directory ()
+  "Get a create a suitable compilation buffer."
+  (when-let ((name (npmjs-get-project-root)))
+    (expand-file-name name)))
 
 (defun npmjs--get-buffer ()
   "Get a create a suitable compilation buffer."
   (if (eq major-mode 'npmjs-mode)
       (current-buffer)
     (get-buffer-create
-     (or (npmjs--get-project-buffer-name)
-         (npmjs--get-global-buffer-name)))))
+     (or
+      (npmjs--get-project-buffer-name)
+      (npmjs--get-global-buffer-name)))))
 
-(defun npmjs--process-sentinel (proc _state)
-  "Process sentinel helper to run hooks after PROC finishes."
+(defun npmjs--process-sentinel (proc state)
+  "Process sentinel helper to run hooks after PROC finishes.
+Also show message when STATE changed."
   (with-current-buffer (process-buffer proc)
-    (let ((status (process-exit-status proc)))
-      (npmjs-message "npm: %s" status))
+    (npmjs-message "%s: %s" npmjs--current-command state)
     (run-hooks 'npmjs-finished-hook)))
 
-;;;###autoload
-(defun npmjs-read-npm-dependency (&optional prompt initial-input history)
+(defvar npmjs-multi-completion-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map
+                (kbd "C-<return>")
+                #'npmjs-throw-done)
+    (define-key map (kbd "C-M-j")
+                #'npmjs-throw-done)
+    map)
+  "Keymap used in `npmjs-multi-completing-read-annotated'.")
+
+
+(defun npmjs-dependencies-get-ivy-map ()
+  "Return adapted for ivy `npmjs-multi-completion-map'."
+  (let ((map (make-sparse-keymap))
+        (iv-keys
+         (when (boundp 'ivy-minibuffer-map)
+           (where-is-internal 'ivy-done ivy-minibuffer-map))))
+    (dolist (key iv-keys)
+      (define-key map key #'npmjs-ivy-throw-done))
+    (dolist (key
+             (where-is-internal 'npmjs-throw-done npmjs-multi-completion-map))
+      (define-key map key #'npmjs-search-throw-done))
+    map))
+
+(defun npmjs-search-throw-done ()
+  "Throw done with `ivy-text'."
+  (interactive)
+  (when (boundp 'ivy-text)
+    (npmjs-throw-done ivy-text)))
+
+(defun npmjs-ivy-throw-done ()
+  "Throw either current ivy candidate or text."
+  (interactive)
+  (when (and
+         (fboundp 'ivy-state-current)
+         (boundp 'ivy-last)
+         (boundp 'ivy-text))
+    (let ((text ivy-text)
+          (current (ivy-state-current ivy-last))
+          (cand))
+      (setq cand (or
+                  (when current
+                    (car (split-string current "[\s\t]" t)))
+                  text))
+      (npmjs-throw-done cand))))
+
+(defun npmjs-ivy-minibuffer-setup ()
+  "Setup keymap for `npmjs-ivy-read-npm-dependency'."
+  (use-local-map
+   (make-composed-keymap
+    (npmjs-dependencies-get-ivy-map)
+    (current-local-map))))
+
+(defun npmjs-ivy-read-npm-dependency (&optional prompt initial-input history)
   "Call the npm search shell command with PROMPT, INITIAL-INPUT, and HISTORY.
 INITIAL-INPUT can be given as the initial minibuffer input."
   (interactive)
-  (if (progn
-        (require 'ivy nil t)
-        (require 'counsel nil t)
-        (and (fboundp 'ivy-more-chars)
-             (fboundp 'counsel--async-command)
-             (fboundp 'ivy-read)
-             (fboundp 'counsel-delete-process)))
-      (let* ((dependencies)
-             (choice (ivy-read
-                      (or prompt
-                          "Repo:\s")
-                      (lambda (str)
-                        (or
-                         (ivy-more-chars)
-                         (progn
-                           (counsel--async-command
-                            (concat
-                             "npm search --prefer-offline --no-color --parseable "
-                             str))
-                           '("" "working..."))))
-                      :initial-input
-                      (when initial-input
-                        (string-join (split-string
-                                      initial-input "[\s\t,]+"
-                                      t)
-                                     ","))
-                      :dynamic-collection t
-                      :history (or
-                                history
-                                'npmjs-history-dependencies)
-                      :multi-action
-                      (lambda (marked)
-                        (setq dependencies
-                              (append marked dependencies)))
-                      :action (lambda (d) d)
-                      :unwind #'counsel-delete-process
-                      :caller 'npmjs-read-npm-dependency))
-             (single-cand (if (stringp choice)
-                              (car (split-string choice nil t))
-                            choice))
-             (result
-              (cond (dependencies
-                     (mapcar (lambda (d)
-                               (if (stringp d)
-                                   (car (split-string d nil))
-                                 d))
-                             dependencies))
-                    (t (list single-cand)))))
-        (car result))
-    (car
-     (let ((pkg (npmjs-search-package)))
-       (if (stringp pkg)
-           (list pkg)
-         pkg)))))
+  (when (progn
+          (require 'ivy nil t)
+          (require 'counsel nil t)
+          (and (fboundp 'ivy-more-chars)
+               (fboundp 'counsel--async-command)
+               (fboundp 'ivy-read)
+               (fboundp 'counsel-delete-process)))
+    (catch 'done
+      (unwind-protect
+          (progn
+            (add-hook 'minibuffer-setup-hook #'npmjs-ivy-minibuffer-setup
+                      t)
+            (ivy-read
+             (concat (string-trim (or prompt "Repo:")) " ")
+             (lambda (str)
+               (or
+                (ivy-more-chars)
+                (progn
+                  (counsel--async-command
+                   (concat "npm search --prefer-offline --no-color --parseable "
+                           str))
+                  '("" "working..."))))
+             :initial-input
+             (when initial-input
+               (string-join (split-string
+                             initial-input "[\s\t,]+"
+                             t)
+                            ","))
+             :dynamic-collection t
+             :history (or
+                       history
+                       'npmjs-history-dependencies)
+             :action (lambda (c)
+                       (or (car (split-string (or c
+                                                  (when (boundp
+                                                         'ivy-text)
+                                                    ivy-text)
+                                                  "")
+                                              nil t))))
+             :unwind #'counsel-delete-process
+             :caller 'npmjs-ivy-read-npm-dependency))
+        (remove-hook 'minibuffer-setup-hook #'npmjs-ivy-minibuffer-setup)))))
+
+(defun npmjs-read-new-dependency (&optional prompt initial-input history)
+  "Read dependency in minibuffer with completions from npm search command.
+This function will use `ivy-read' for async completions when available.
+If PROMPT is non, prompting with string PROMPT.
+INITIAL-INPUT can be given as the initial minibuffer input.
+The third arg HISTORY, if non-nil, specifies a history list and optionally the
+ initial position in the list."
+  (cond ((and (fboundp 'ivy-more-chars)
+              (fboundp 'counsel--async-command)
+              (fboundp 'ivy-read)
+              (fboundp 'counsel-delete-process))
+         (npmjs-ivy-read-npm-dependency prompt initial-input history))
+        (t (npmjs-search-package))))
+
+;; ;;;###autoload
+;; (defun npmjs-read-npm-dependency (&optional prompt initial-input history)
+;;   "Call the npm search shell command with PROMPT, INITIAL-INPUT, and HISTORY.
+;; INITIAL-INPUT can be given as the initial minibuffer input."
+;;   (interactive)
+;;   (if (progn
+;;         (require 'ivy nil t)
+;;         (require 'counsel nil t)
+;;         (and (fboundp 'ivy-more-chars)
+;;              (fboundp 'counsel--async-command)
+;;              (fboundp 'ivy-read)
+;;              (fboundp 'counsel-delete-process)))
+;;       (let* ((dependencies)
+;;              (choice
+;;               (unwind-protect
+;;                   (progn
+;;                     (add-hook 'minibuffer-setup-hook 'npmjs-ivy-minibuffer-setup
+;;                               t)
+;;                     (ivy-read
+;;                      (or prompt
+;;                          "Repo:\s")
+;;                      (lambda (str)
+;;                        (or
+;;                         (ivy-more-chars)
+;;                         (progn
+;;                           (counsel--async-command
+;;                            (concat
+;;                             "npm search --prefer-offline --no-color --parseable "
+;;                             str))
+;;                           '("" "working..."))))
+;;                      :initial-input
+;;                      (when initial-input
+;;                        (string-join (split-string initial-input "[\s\t,]+" t)
+;;                                     ","))
+;;                      :dynamic-collection t
+;;                      :history (or
+;;                                history
+;;                                'npmjs-history-dependencies)
+;;                      :multi-action
+;;                      (lambda (marked)
+;;                        (setq dependencies
+;;                              (append marked dependencies)))
+;;                      :action (lambda (d) d)
+;;                      :unwind #'counsel-delete-process
+;;                      :caller 'npmjs-ivy-read-npm-dependency))
+;;                 (remove-hook 'minibuffer-setup-hook 'npmjs-ivy-minibuffer-setup)))
+;;              (single-cand (if (stringp choice)
+;;                               (car (split-string choice nil t))
+;;                             choice))
+;;              (result
+;;               (cond (dependencies
+;;                      (mapcar (lambda (d)
+;;                                (if (stringp d)
+;;                                    (car (split-string d nil))
+;;                                  d))
+;;                              dependencies))
+;;                     (t (list single-cand)))))
+;;         (car result))
+;;     (car
+;;      (let ((pkg (npmjs-search-package)))
+;;        (if (stringp pkg)
+;;            (list pkg)
+;;          pkg)))))
 
 (defvar npmjs-bmenu-search-buff-name "*npm search*")
 (defvar npmjs-bmenu-search-output nil)
 
-(defun npmjs--alist-props (props alist)
-  "Pick PROPS from ALIST."
-  (mapcar (lambda (k)
-            (alist-get k alist))
-          props))
-
 (defvar npmjs--marked-packages nil)
+
 (defvar-local npmjs-search-highlight-ov nil
   "An overlay for `npmjs-search-mode'.")
 
@@ -1228,8 +1362,6 @@ INITIAL-INPUT can be given as the initial minibuffer input."
         (overlay-put npmjs-search-highlight-ov 'face 'success)
         (overlay-put npmjs-search-highlight-ov 'npmjs t)))))
 
-
-
 (defun npmjs-goto-start-of-entry ()
   "Return button data props from first column."
   (when-let ((id (tabulated-list-get-id)))
@@ -1241,45 +1373,6 @@ INITIAL-INPUT can be given as the initial minibuffer input."
         prev-id)
       (unless (equal prev-id id)
         (forward-line 1)))))
-
-(defun npmjs--mark ()
-  "Mark a tabulated entry at point and move to the next one."
-  (interactive)
-  (require 'text-property-search)
-  (save-excursion
-    (npmjs-goto-start-of-entry)
-    (tabulated-list-put-tag "*" t))
-  (text-property-search-forward 'tabulated-list-id))
-
-
-
-
-(defun npmjs--unmark-all (&optional char)
-  "Unmark all marked entries.
-If optional CHAR is non-nil, then only return items
-marked with that character."
-  (interactive)
-  (save-excursion
-    (goto-char (point-min))
-    (while (not (eobp))
-      (pcase (char-after)
-        (?\s nil)
-        ((pred (apply-partially #'eq char))
-         (tabulated-list-put-tag " "))
-        (_ (tabulated-list-put-tag " ")))
-      (forward-line))))
-
-
-
-
-(defun npmjs--unmark ()
-  "Unmark a tabulated entry at point and move to the previous one."
-  (interactive)
-  (require 'text-property-search)
-  (save-excursion
-    (npmjs-goto-start-of-entry)
-    (tabulated-list-put-tag " " t))
-  (text-property-search-backward 'tabulated-list-id))
 
 (defun npmjs-search-parseable-to-rows (output)
   "Map OUTPUT to rows."
@@ -1363,18 +1456,15 @@ marked with that character."
       (with-current-buffer buff
         (npmjs-search-package--forward-line-0 n)))))
 
-
 (defun npmjs-search-package--next-line ()
   "Forward line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
   (npmjs-search-package--forward-line 1))
 
-
 (defun npmjs-search-package--prev-line ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
   (interactive)
   (npmjs-search-package--forward-line -1))
-
 
 (defun npmjs-search-package--beg-of-buffer ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
@@ -1385,7 +1475,6 @@ marked with that character."
       (unless (tabulated-list-get-id)
         (forward-line 1)
         (npmjs-search-highlight-current)))))
-
 
 (defun npmjs-search-package--end-of-buffer ()
   "Previous line in buffer `npmjs-bmenu-search-buff-name'."
@@ -1436,6 +1525,50 @@ marked with that character."
     (let ((marked npmjs--marked-packages))
       (npmjs--update-current (string-join marked ",")))))
 
+(defun npmjs-search-package-fn (args buff)
+  "Setup minibuffer BUFF for searching ARGS."
+  (when-let ((input
+              (with-current-buffer buff
+                (use-local-map
+                 (let ((map (make-sparse-keymap)))
+                   (define-key map
+                               [remap next-line]
+                               #'npmjs-search-package--next-line)
+                   (define-key map
+                               [remap
+                                previous-line]
+                               #'npmjs-search-package--prev-line)
+                   (define-key map
+                               [remap
+                                set-mark-command]
+                               #'npmjs-search-package-mark-or-unmark)
+                   (define-key map
+                               [remap
+                                scroll-down-command]
+                               #'npmjs-search-package--beg-of-buffer)
+                   (define-key map
+                               [remap
+                                scroll-up-command]
+                               #'npmjs-search-package--end-of-buffer)
+                   (set-keymap-parent
+                    map
+                    (current-local-map))
+                   map))
+                (ignore-errors
+                  (car
+                   (last
+                    (seq-difference
+                     (split-string
+                      (minibuffer-contents-no-properties)
+                      "," t)
+                     npmjs--marked-packages)))))))
+    (when (string-empty-p input)
+      (setq npmjs--marked-packages nil))
+    (npmjs-search-package-by-regexp
+     input
+     args)
+    (select-window (active-minibuffer-window))))
+
 ;;;###autoload
 (defun npmjs-search-package (&optional args)
   "Incremental search of npm packages with ARGS."
@@ -1445,53 +1578,11 @@ marked with that character."
         (minibuffer-with-setup-hook
             (lambda ()
               (when (minibufferp)
-                (setq
-                 timer
-                 (run-with-idle-timer
-                  0.2 'repeat
-                  (lambda (buf)
-                    (when-let ((input
-                                (with-current-buffer buf
-                                  (use-local-map
-                                   (let ((map (make-sparse-keymap)))
-                                     (define-key map
-                                                 [remap next-line]
-                                                 'npmjs-search-package--next-line)
-                                     (define-key map
-                                                 [remap
-                                                  previous-line]
-                                                 'npmjs-search-package--prev-line)
-                                     (define-key map
-                                                 [remap
-                                                  set-mark-command]
-                                                 'npmjs-search-package-mark-or-unmark)
-                                     (define-key map
-                                                 [remap
-                                                  scroll-down-command]
-                                                 'npmjs-search-package--beg-of-buffer)
-                                     (define-key map
-                                                 [remap
-                                                  scroll-up-command]
-                                                 'npmjs-search-package--end-of-buffer)
-                                     (set-keymap-parent
-                                      map
-                                      (current-local-map))
-                                     map))
-                                  (ignore-errors
-                                    (car
-                                     (last
-                                      (seq-difference
-                                       (split-string
-                                        (minibuffer-contents-no-properties)
-                                        "," t)
-                                       npmjs--marked-packages)))))))
-                      (when (string-empty-p input)
-                        (setq npmjs--marked-packages nil))
-                      (npmjs-search-package-by-regexp
-                       input
-                       args)
-                      (select-window (active-minibuffer-window))))
-                  (current-buffer)))))
+                (setq timer (run-with-idle-timer
+                             0.2 'repeat
+                             #'npmjs-search-package-fn
+                             args
+                             (current-buffer)))))
           (read-string "Package: ")
           (when timer (cancel-timer timer)
                 (setq timer nil))
@@ -1520,6 +1611,7 @@ marked with that character."
   (setq tabulated-list-padding 2)
   (setq revert-buffer-function 'npmjs-table--revert)
   (tabulated-list-init-header))
+
 (define-derived-mode npmjs-list-mode tabulated-list-mode
   "Show report gathered about unused definitions."
   (setq-local tabulated-list-format
@@ -1528,8 +1620,6 @@ marked with that character."
                ("Description" 33 nil)])
   (setq tabulated-list-padding 2)
   (tabulated-list-init-header))
-
-
 
 (defun npmjs-json-parse-string (str &optional object-type array-type null-object
                                     false-object)
@@ -1594,20 +1684,6 @@ represent a JSON false value.  It defaults to `:false'."
               'list)))
        (npmjs-message (buffer-string))))))
 
-(defun npmjs-call-process (command &rest args)
-  "Execute COMMAND with ARGS synchronously.
-
-Return stdout output if command existed with zero status, nil otherwise."
-  (npmjs-nvm-with-current-node-version
-   (with-temp-buffer
-     (let ((status (apply #'call-process command nil t nil
-                          (flatten-list args))))
-       (let ((result (string-trim (buffer-string))))
-         (if (zerop status)
-             result
-           (npmjs-message result) nil))))))
-
-
 (defun npmjs-global-packages ()
   "Return list of globally installed packages."
   (npmjs-pluck-depenencies
@@ -1667,113 +1743,6 @@ Return stdout output if command existed with zero status, nil otherwise."
       (npmjs-pluck-depenencies package-json)
     '()))
 
-(defun npmjs-alist-to-entries (alist)
-  "Transfrom ALIST to tabulated entries."
-  (mapcar (lambda (a)
-            (let
-                ((row
-                  (cond ((consp (car-safe a))
-                         (mapcar
-                          (lambda (it)
-                            (or it ""))
-                          (npmjs--alist-props
-                           '(name version
-                                  description)
-                           a)))
-                        (t (or (pcase-let ((`(,name ,version ,type) a))
-                                 (mapcar #'substring-no-properties
-                                         (list name version (or type ""))))
-                               (pcase-let ((`(,name ,version) a))
-                                 (mapcar #'substring-no-properties
-                                         (list name
-                                               version
-                                               ""))))))))
-              (list (car row)
-                    (apply #'vector row))))
-          alist))
-
-(defun npmjs-list-render (buff-name entries)
-  "Render ENTRIES in buffer BUFF-NAME."
-  (with-current-buffer (get-buffer-create (format buff-name
-                                                  default-directory))
-    (unless (eq major-mode 'npmjs-list-mode)
-      (npmjs-list-mode))
-    (setq tabulated-list-entries entries)
-    (tabulated-list-print)
-    (unless (get-buffer-window (current-buffer))
-      (pop-to-buffer (current-buffer)))))
-
-(defun npmjs-list-global-packages ()
-  "Read globally installed js packages."
-  (npmjs-nvm-with-current-node-version
-   (let* ((default-directory
-           (expand-file-name (or
-                              (npmjs-get-project-root)
-                              (vc-root-dir)
-                              default-directory)))
-          (alist (npmjs-get-global-packages))
-          (buff-name (format "Globally intstalled packages (%s): "
-                             (string-trim (shell-command-to-string
-                                           "node -v"))))
-          (entries (npmjs-alist-to-entries alist)))
-     (npmjs-list-render buff-name entries))))
-
-(defun npmjs-list-local-packages ()
-  "Read globally installed js packages."
-  (npmjs-nvm-with-current-node-version (npmjs-pluck-depenencies
-                                        (npmjs-local-packages)))
-  (let* ((default-directory
-          (expand-file-name (or
-                             (npmjs-get-project-root)
-                             (vc-root-dir)
-                             default-directory)))
-         (alist (npmjs-local-packages))
-         (buff-name (format "Locally intstalled packages (%s): "
-                            (string-trim (shell-command-to-string
-                                          "node -v"))))
-         (entries (npmjs-alist-to-entries alist)))
-    (npmjs-list-render buff-name entries)))
-
-(defun npmjs-get-global-packages ()
-  "Read globally installed js packages."
-  (let* ((default-directory
-          (expand-file-name (or
-                             (npmjs-get-project-root)
-                             (vc-root-dir)
-                             default-directory)))
-         (alist (npmjs-global-packages)))
-    alist))
-
-
-(defun npmjs-read-global-packages (&optional with-version)
-  "Read globally installed js packages.
-If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
-  (npmjs-nvm-with-current-node-version
-   (let* ((default-directory
-           (expand-file-name (or
-                              (npmjs-get-project-root)
-                              (vc-root-dir)
-                              default-directory)))
-          (alist (npmjs-pluck-depenencies (npmjs-global-packages)))
-          (prompt (format "Globally intstalled packages (%s): "
-                          (string-trim (shell-command-to-string
-                                        "node -v"))))
-          (annotf (lambda (it)
-                    (let ((value (cdr-safe (assoc (format "%s" it) alist))))
-                      (concat "@" (if (listp value)
-                                      (string-join value "")
-                                    (or value ""))))))
-          (annotated-items (mapcar (lambda (it)
-                                     (concat (format "%s" (car it))
-                                             (funcall annotf (car it))))
-                                   alist))
-          (pkgs (completing-read-multiple prompt annotated-items)))
-     (if with-version
-         pkgs
-       (mapcar (lambda (it)
-                 (car (split-string it "@" t)))
-               pkgs)))))
-
 (defun npmjs-s-strip-props (item)
   "If ITEM is string, return it without text properties.
 
@@ -1790,33 +1759,35 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
 (defun npmjs-pluck-depenencies (package-json-alist)
   "Completion table with current PACKAGE-JSON-ALIST dependencies."
   (seq-reduce (lambda (acc it)
-                (if-let ((deps (when-let ((found
-                                           (alist-get it package-json-alist)))
-                                 (mapcar (lambda (cell)
-                                           (let* ((symb (car cell))
-                                                  (value (cdr cell))
-                                                  (version
-                                                   (if (stringp value)
-                                                       value
-                                                     (cdr-safe (assoc 'version
-                                                                      value))))
-                                                  (type (pcase it
-                                                          ('devDependencies
-                                                           "dev")
-                                                          ('peerDependencies
-                                                           "peer")
-                                                          ('optionalDependencies
-                                                           "optional"))))
-                                             (remove nil
-                                                     (list (npmjs-s-strip-props
-                                                            (if (stringp
-                                                                 symb)
-                                                                symb
-                                                              (symbol-name
-                                                               symb)))
-                                                           version
-                                                           type))))
-                                         found))))
+                (if-let ((deps
+                          (when-let ((found
+                                      (alist-get it package-json-alist)))
+                            (mapcar (lambda (cell)
+                                      (let* ((symb (car cell))
+                                             (value (cdr cell))
+                                             (version
+                                              (if (stringp value)
+                                                  value
+                                                (cdr-safe (assoc 'version
+                                                                 value))))
+                                             (type
+                                              (pcase it
+                                                ('devDependencies
+                                                 "dev")
+                                                ('peerDependencies
+                                                 "peer")
+                                                ('optionalDependencies
+                                                 "optional"))))
+                                        (remove nil
+                                                (list (npmjs-s-strip-props
+                                                       (if (stringp
+                                                            symb)
+                                                           symb
+                                                         (symbol-name
+                                                          symb)))
+                                                      version
+                                                      type))))
+                                    found))))
                     (setq acc (append acc deps)))
                 acc)
               '(optionalDependencies
@@ -1825,10 +1796,14 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
                 dependencies)
               '()))
 
+(defun npmjs-get-package-dist-tags (package)
+  "Exec \"npm view\" for PACKAGE and return alist."
+  (let ((data (npmjs-get-package-info package)))
+    (mapcar #'car (alist-get 'dist-tags data))))
+
 (defun npmjs-get-package-info (package)
   "Exec \"npm view\" for PACKAGE and return alist."
   (npmjs-parse-json-from-output "npm" "view" "--json" package))
-
 
 (defun npmjs-get-package-versions (package)
   "Exec \"npm info\" for PACKAGE and return list of available versions."
@@ -1838,6 +1813,33 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
      (mapcar #'cdr (alist-get 'dist-tags data))
      (alist-get 'versions
                 data))))
+
+
+
+
+(defun npmjs-confirm-package-dist-tags (package &optional prompt)
+  "Confirm PACKAGE dist-tag with PROMPT."
+  (let* ((dist-tags (or (npmjs-stringify
+                         (ignore-errors
+                           (alist-get 'dist-tags (npmjs-get-package-info
+                                                  package))))
+                        (list (list "latest" "not found"))))
+         (annotate-fn (lambda (it)
+                        (concat " "
+                                (or
+                                 (when-let
+                                     ((vers (cdr (assoc-string it
+                                                               dist-tags))))
+                                   (format "(%s)" vers))
+                                 ""))))
+         (tag (completing-read
+               (or prompt (format "%s: " package))
+               (lambda (str pred action)
+                 (if (eq action 'metadata)
+                     `(metadata
+                       (annotation-function . ,annotate-fn))
+                   (complete-with-action action dist-tags str pred))))))
+    (format "%s@%s" package tag)))
 
 (defun npmjs-confirm-package-version (package &optional prompt)
   "Confirm PACKAGE version with PROMPT."
@@ -1860,28 +1862,13 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
         (format "%s@%s" package version)
       package)))
 
-(defun npmjs-get-scripts ()
-  "Return alist of scripts in package.json."
-  (when-let* ((package-json-path
-               (npmjs-get-package-json-path))
-              (package-json
-               (npmjs-read-json
-                package-json-path
-                'alist)))
-    (alist-get 'scripts package-json)))
-
 (defun npmjs-read-script (&optional prompt input hist)
   "Read package json script with PROMPT, INPUT and HIST."
   (let* ((alist
-          (npmjs-get-scripts))
+          (npmjs-get-package-json-scripts))
          (annotf
           (lambda (it)
-            (concat ": "
-                    (cdr
-                     (assoc
-                      (intern
-                       it)
-                      alist))))))
+            (concat ": " (cdr (assoc (intern it) alist))))))
     (completing-read (or prompt "Script: ")
                      (lambda (str pred
                                   action)
@@ -1897,63 +1884,10 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
                           pred)))
                      nil nil input hist)))
 
-
-(defun npmjs-substitute-hints (str)
-  "Remove hints from STR."
-  (with-temp-buffer
-    (insert
-     str)
-    (goto-char (point-min))
-    (while (re-search-forward "[@./=]?\\(<\\([a-z0-9-/@][^>]+\\)[>][\s./=]?\\)+"
-                              nil t 1)
-      (replace-match ""))
-    (buffer-string)))
-
-
-(defun npmjs-sort-args (args)
-  "Sort arguments ARGS."
-  (seq-sort-by (lambda (a)
-                 (cond ((and (listp a)
-                             (or (string= "--" (car a))
-                                 (string-prefix-p "-- " (car a))))
-                        -3)
-                       ((string-prefix-p "--" a)
-                        -2)
-                       ((string-prefix-p "-" a)
-                        -1)
-                       (t 0)))
-               #'>
-               args))
-
-(defun npmjs-format-args (args)
-  "Format ARGS to string."
-  (setq args (npmjs-stringify args))
-  (let ((new-args (mapcar
-                   (lambda (it)
-                     (cond ((listp it)
-                            (string-join it " "))
-                           (t it)))
-                   (npmjs-sort-args args))))
-    (replace-regexp-in-string "=[\s]" "="
-                              (npmjs-substitute-hints
-                               (string-join new-args "\s")))))
-
-
-(defun npmjs-get-arguments ()
-  "Return transient ARGS."
-  (cond (transient-current-command
-         (transient-args transient-current-command))
-        (transient--prefix
-         (setq transient-current-prefix transient--prefix)
-         (setq transient-current-command (oref transient--prefix command))
-         (setq transient-current-suffixes transient--suffixes)
-         (transient-args transient-current-command))))
-
-(defun npmjs-get-formatted-transient-args ()
-  "Return string with formatted current transient arguments."
-  (npmjs-format-args (npmjs-get-arguments)))
-
 (defvar npmjs-man-paths nil)
+(defvar Man-notify-method)
+(defvar manual-program)
+
 
 (defun npmjs-man-paths-files ()
   "Return man files for npm."
@@ -1974,6 +1908,7 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
                                                 (cdr it)))
                                              auto-mode-alist))
                                     "\\|")))))
+
 (defun npmjs-view-npm-command-man (command)
   "Find and view manual for npm COMMAND."
   (when-let ((files (npmjs-man-paths-files))
@@ -2030,7 +1965,6 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
                  (string= command (file-name-base it)))
                (npmjs-man-paths-files)))))
 
-(defvar Man-notify-method)
 (defun npmjs-view-man-file (file)
   "Run man on FILE."
   (require 'man)
@@ -2064,7 +1998,6 @@ If WITH-VERSION is non nil, return list of packages in format PKG@VERSION."
          (unless (active-minibuffer-window)
            (select-window (get-buffer-window buff))))))))
 
-
 (defun npmjs-get-man-paths (&optional force)
   "Return MANPATH with node and npm man pages.
 IF FORCE is non nil, purge cache."
@@ -2092,10 +2025,6 @@ IF FORCE is non nil, purge cache."
                                                       path-separator)))
                                        path-separator)))
               mpath))))
-
-(defvar manual-program)
-(defvar Man-man-k-use-anchor)
-
 
 ;;;###autoload
 (defun npmjs-man-advice (&optional fn &rest args)
@@ -2288,20 +2217,18 @@ KEY-LEN is minimal length of keys."
                                    #'string-prefix-p it)
                                   shortcuts)))
                      (append
-                      
                       (npmjs-key-builder-get-all-key-strategies word
                                                                 min-len)
                       (or (seq-remove (lambda (key)
-                                          (seq-find (apply-partially
-                                                     #'string-prefix-p
-                                                     (downcase key))
-                                                    all-keys))
-                                        random-variants)
-                            random-variants)
+                                        (seq-find (apply-partially
+                                                   #'string-prefix-p
+                                                   (downcase key))
+                                                  all-keys))
+                                      random-variants)
+                          random-variants)
                       ;; (when (= min-len 1)
                       ;;   )
                       )))
-              
               (while (and
                       (< (length short) min-len))
                 (setq short (concat short (number-to-string (random 10)))))
@@ -2312,6 +2239,7 @@ KEY-LEN is minimal length of keys."
                      (t (cons short def)))
                result)))))
       (reverse result))))
+
 (defun npmjs-key-builder-generate-shortcuts (items &optional key-fn value-fn
                                                    used-keys key-len)
   "Generate shortcuts from list of ITEMS.
@@ -2346,7 +2274,6 @@ KEY-LEN is minimal length of keys."
   (when (stringp (car-safe item))
     (car item)))
 
-
 (defun npmjs-make-command-name (&rest args)
   "Make name from ARGS."
   (let ((name (mapconcat (npmjs--compose
@@ -2358,13 +2285,11 @@ KEY-LEN is minimal length of keys."
                          " ")))
     name))
 
-
 (defun npmjs-make-symbol (&rest args)
   "Make name from ARGS."
   (make-symbol
    (replace-regexp-in-string "[\s\t]+" "-"
                              (npmjs-make-command-name args))))
-
 
 (defun npmjs-confirm-command (cmd &rest args)
   "Prompt CMD with ARGS in minibuffer."
@@ -2383,6 +2308,63 @@ KEY-LEN is minimal length of keys."
       (npmjs-compile-global (npmjs-confirm-command cmd args))
     (npmjs-compile (npmjs-confirm-command cmd args))))
 
+(defun npmjs-substitute-hints (str)
+  "Remove hints from STR."
+  (with-temp-buffer
+    (insert
+     str)
+    (goto-char (point-min))
+    (while (re-search-forward "[@./=]?\\(<\\([a-z0-9-/@][^>]+\\)[>][\s./=]?\\)+"
+                              nil t 1)
+      (replace-match ""))
+    (buffer-string)))
+
+(defun npmjs-arg-sort-transformer (argument)
+  "Transform transient argument ARGUMENT to sort score as integer."
+  (let ((arg (if (listp argument)
+                 (car argument)
+               argument)))
+    (cond ((string= "--" arg)
+           -4)
+          ((string-prefix-p "--" arg)
+           -3)
+          ((string-prefix-p "-" arg)
+           -2)
+          ((string-prefix-p "<" arg)
+           -1)
+          (t 0))))
+
+(defun npmjs-sort-args (args)
+  "Sort transient arguments ARGS."
+  (seq-sort-by #'npmjs-arg-sort-transformer #'> args))
+
+(defun npmjs-format-args (args)
+  "Format transient arguments ARGS to string."
+  (let ((new-args (mapcar
+                   (lambda (it)
+                     (cond ((listp it)
+                            (string-join it " "))
+                           (t it)))
+                   args)))
+    (replace-regexp-in-string "=[\s]" "="
+                              (npmjs-substitute-hints
+                               (string-join new-args "\s")))))
+
+(defun npmjs-get-arguments ()
+  "Return current transient arguments ARGS."
+  (let ((raw-args))
+    (cond (transient-current-command
+           (setq raw-args (transient-args transient-current-command)))
+          (transient--prefix
+           (setq transient-current-prefix transient--prefix)
+           (setq transient-current-command (oref transient--prefix command))
+           (setq transient-current-suffixes transient--suffixes)
+           (setq raw-args (transient-args transient-current-command))))
+    (npmjs-sort-args (npmjs-stringify raw-args))))
+
+(defun npmjs-get-formatted-transient-args ()
+  "Return string with formatted current transient arguments."
+  (npmjs-format-args (npmjs-get-arguments)))
 
 (defun npmjs-group-vectors (arguments &optional height win-width)
   "Group ARGUMENTS into vector.
@@ -2423,7 +2405,6 @@ and for WIN-WIDTH - window width."
        (apply #'vector it))
      (seq-split arguments final))))
 
-
 ;;;###autoload
 (defun npmjs-done ()
   "Execute npm transient command."
@@ -2438,12 +2419,13 @@ and for WIN-WIDTH - window width."
                                             transient-current-command))
                       (not (npmjs-get-project-root))))
           (args (npmjs-get-formatted-transient-args)))
-      (let* ((default-directory (if global
-                                    default-directory
-                                  (or
-                                   (npmjs-get-project-root)
-                                   (vc-root-dir)
-                                   default-directory)))
+      (let* ((default-directory (expand-file-name
+                                 (if global
+                                     default-directory
+                                   (or
+                                    (npmjs-get-project-root)
+                                    (vc-root-dir)
+                                    default-directory))))
              (cmd
               (append
                (npmjs-make-command-name "npm" name))))
@@ -2477,24 +2459,13 @@ and for WIN-WIDTH - window width."
       (setq str (npmjs-json-parse-string
                  (substring-no-properties str json-start))))))
 
-
-
-
 ;;;###autoload
-(defun npmjs-throw-done ()
-  "Throw to the catch for done and return nil from it."
+(defun npmjs-throw-done (&optional arg)
+  "Throw ARG to the catch for done.
+By default ARG is t."
   (interactive)
-  (throw 'done t))
+  (throw 'done (or arg t)))
 
-(defvar npmjs-multi-completion-map
-  (let ((map (make-sparse-keymap)))
-    (define-key map
-                (kbd "C-<return>")
-                #'npmjs-throw-done)
-    (define-key map (kbd "C-M-j")
-                #'npmjs-throw-done)
-    map)
-  "Keymap used in `npmjs-multi-completing-read-annotated'.")
 
 (defun npmjs-stringify (item)
   "Recoursively stringify ITEM."
@@ -2543,13 +2514,13 @@ and INHERIT-INPUT-METHOD are the same as for `completing-read'."
             (concat
              (if-let ((value
                        (when value-getter
-                         (funcall k value-getter))))
+                         (funcall value-getter k))))
                  (if annot-value
                      (funcall annot-value value)
                    (format " %s" value))
                "")))))
     (completing-read
-     (concat (or prompt "Item")" \s")
+     (concat (string-trim (or prompt "Item"))" \s")
      (or table-completion
          (lambda (&optional str pred action)
            (if (eq action 'metadata)
@@ -2560,7 +2531,6 @@ and INHERIT-INPUT-METHOD are the same as for `completing-read'."
      predicate
      require-match
      initial-input hist def inherit-input-method)))
-
 
 (defun npmjs-multi-completing-read-annotated (&optional prompt collection
                                                         annot-value
@@ -2598,84 +2568,127 @@ as those for `completing-read'."
                    (format " %s" value))
                ""))))
          (choices)
-         (curr))
-    (catch 'done
-      (while (setq curr
-                   (let ((ch (minibuffer-with-setup-hook
-                                 (lambda ()
-                                   (use-local-map
-                                    (make-composed-keymap
-                                     npmjs-multi-completion-map
-                                     (current-local-map))))
-                               (completing-read
-                                (concat (string-trim (or prompt "Item"))" \s"
-                                        (substitute-command-keys
-                                         "(`\\<npmjs-multi-completion-map>\
+         (curr)
+         (done))
+    (setq done
+          (catch 'done
+            (while (setq curr
+                         (let ((ch (minibuffer-with-setup-hook
+                                       (lambda ()
+                                         (use-local-map
+                                          (make-composed-keymap
+                                           npmjs-multi-completion-map
+                                           (current-local-map))))
+                                     (completing-read
+                                      (concat (string-trim (or prompt
+                                                               "Item"))
+                                              "\s"
+                                              (substitute-command-keys
+                                               "(`\\<npmjs-multi-completion-map>\
 \\[npmjs-throw-done]' to finish)\s")
-                                        (if choices
-                                            (concat
-                                             "("
-                                             (string-join
-                                              choices
-                                              ", ")
-                                             ")")
-                                          ""))
-                                (or table-completion
-                                    (lambda (&optional str pred action)
-                                      (if (eq action 'metadata)
-                                          `(metadata
-                                            (annotation-function . ,
-                                                                 annotate-fn))
-                                        (complete-with-action action alist str
-                                                              pred))))
-                                (lambda (it)
-                                  (if (consp it)
-                                      (not (member (car it) choices))
-                                    (not (member it choices))))
-                                nil initial-input hist))))
-                     (if (string-empty-p (string-trim ch))
-                         (npmjs-throw-done)
-                       ch)))
-        (setq choices (append choices (list curr)))))
-    choices))
+                                              (if choices
+                                                  (concat
+                                                   "("
+                                                   (string-join
+                                                    choices
+                                                    ", ")
+                                                   ")")
+                                                ""))
+                                      (or table-completion
+                                          (lambda (&optional str pred
+                                                             action)
+                                            (if (eq action 'metadata)
+                                                `(metadata
+                                                  (annotation-function . ,
+                                                                       annotate-fn))
+                                              (complete-with-action action
+                                                                    alist
+                                                                    str
+                                                                    pred))))
+                                      (lambda (it)
+                                        (if (consp it)
+                                            (not (member (car it) choices))
+                                          (not (member it choices))))
+                                      nil initial-input hist))))
+                           (if (string-empty-p (string-trim ch))
+                               (npmjs-throw-done)
+                             ch)))
+              (setq choices (append choices (list curr))))))
+    (if (stringp done)
+        (append choices (list done))
+      choices)))
+
+(defun npmjs-single-reader (fn &optional prompt initial-input history)
+  "Call minibuffer reader FN with PROMPT, INITIAL-INPUT, HISTORY.
+It also temporarily setup extra keymap `npmjs-multi-completion-map'."
+  (let* ((curr))
+    (setq curr
+          (catch 'done
+            (let ((ch (minibuffer-with-setup-hook
+                          (lambda ()
+                            (use-local-map
+                             (make-composed-keymap
+                              npmjs-multi-completion-map
+                              (current-local-map))))
+                        (funcall fn (concat (or prompt "Item")
+                                            " \s")
+                                 initial-input history))))
+              (cond ((or (not ch)
+                         (when (listp ch)
+                           (not (car ch)))
+                         (and (stringp ch)
+                              (string-empty-p (string-trim ch))))
+                     (npmjs-throw-done))
+                    (t ch)))))
+    (if (stringp (car-safe curr))
+        (car curr)
+      curr)))
 
 (defun npmjs-multi-reader (fn &optional prompt initial-input history)
   "Call minibuffer FN with PROMPT INITIAL-INPUT HISTORY."
   (let* ((choices)
-         (curr))
-    (catch 'done
-      (while (setq curr
-                   (let ((ch (minibuffer-with-setup-hook
-                                 (lambda ()
-                                   (use-local-map
-                                    (make-composed-keymap
-                                     npmjs-multi-completion-map
-                                     (current-local-map))))
-                               (funcall fn (concat (or prompt "Item")" \s"
-                                                   (substitute-command-keys
-                                                    "(`\\<npmjs-multi-completion-map>\
-\\[npmjs-throw-done]' to finish)\s")
+         (curr)
+         (done))
+    (setq done
+          (catch 'done
+            (while (setq curr
+                         (let ((ch (minibuffer-with-setup-hook
+                                       (lambda ()
+                                         (use-local-map
+                                          (make-composed-keymap
+                                           npmjs-multi-completion-map
+                                           (current-local-map))))
+                                     (funcall fn (concat
+                                                  (string-trim
+                                                   (or prompt
+                                                       "Item"))
+                                                  " "
+                                                  (string-trim
                                                    (if choices
                                                        (concat
-                                                        "("
-                                                        (string-join
-                                                         choices
-                                                         ", ")
-                                                        ") ")
+                                                        "(" (string-join choices
+                                                                         ", ")
+                                                        ")")
                                                      ""))
-                                        initial-input history))))
-                     (cond ((or (not ch)
-                                (when (listp ch)
-                                  (not (car ch)))
-                                (and (stringp ch)
-                                     (string-empty-p (string-trim ch))))
-                            (npmjs-throw-done))
-                           (t ch))))
-        (setq choices (append choices
-                              (if (and curr (listp curr))
-                                  curr
-                                (list curr))))))
-    choices))
+                                                  " "
+                                                  (substitute-command-keys
+                                                   "(`\\<npmjs-multi-completion-map>\
+\\[npmjs-throw-done]' to finish): "))
+                                              initial-input history))))
+                           (cond ((or (not ch)
+                                      (when (listp ch)
+                                        (not (car ch)))
+                                      (and (stringp ch)
+                                           (string-empty-p (string-trim ch))))
+                                  (npmjs-throw-done))
+                                 (t ch))))
+              (setq choices (append choices
+                                    (if (and curr (listp curr))
+                                        curr
+                                      (list curr)))))))
+    (if (stringp done)
+        (append choices (list done))
+      choices)))
 
 (defun npmjs-make-reader (fn &optional collection annot-value multi)
   "Create minibuffer reader from FN with PROMPT INITIAL-INPUT HISTORY.
@@ -2685,8 +2698,10 @@ COLLECTION should be either function that returns collection
 for `completing-read' or list of choices.
 If MULTI is non nil, create FN with `npmjs-multi-reader', othervise just return
 FN."
-  (cond ((and multi (not collection))
+  (cond ((and fn multi)
          (apply-partially #'npmjs-multi-reader fn))
+        ((and fn (not multi))
+         (apply-partially #'npmjs-single-reader fn))
         ((and collection)
          (npmjs-make-completing-read-reader collection annot-value multi))
         (t fn)))
@@ -2735,10 +2750,16 @@ If MULTI-VALUE is non nil, return list of packages, othervise string."
 (defun npmjs-make-npm-package-reader-with-version (&optional multi-value)
   "Create minibuffer reader for packages from npm registry with version.
 If MULTI-VALUE is non nil, return list of packages, othervise string."
-  (npmjs-make-combined-package-reader #'npmjs-read-npm-dependency
+  (npmjs-make-combined-package-reader #'npmjs-read-new-dependency
                                       #'npmjs-confirm-package-version
                                       multi-value))
 
+(defun npmjs-make-npm-package-reader-with-tag (&optional multi-value)
+  "Create minibuffer reader for packages from npm registry with version.
+If MULTI-VALUE is non nil, return list of packages, othervise string."
+  (npmjs-make-combined-package-reader #'npmjs-read-new-dependency
+                                      #'npmjs-confirm-package-dist-tags
+                                      multi-value))
 
 (defun npmjs-npm-read-config-key-value (&optional prompt initial-input hist)
   "Read key from npm config in minibuffer with annotated completions.
@@ -2780,7 +2801,6 @@ HIST, if non-nil, specifies a history list and optionally the initial
                                   (:null "null")
                                   (_ (format "%s" value))))))))))
 
-
 (defun npmjs-npm-config-completion-table (&optional config)
   "Read key from npm config in minibuffer with annotated completions.
 If CONFIG is non nil, use it as collection.
@@ -2789,35 +2809,30 @@ If INITIAL-INPUT is non-nil, insert it in the minibuffer initially,
   with point positioned at the end.
 HISTORY, if non-nil, specifies a history list and optionally the initial
   position in the list."
-  (let*
-      ((config (mapcar
-                (npmjs--converge cons
-                                 [(npmjs--compose
-                                    substring-no-properties
-                                    (npmjs--cond
-                                      [numberp number-to-string]
-                                      [symbolp symbol-name]
-                                      [t identity])
-                                    car)
-                                  cdr])
-                (or config (npmjs-get-npm-config))))
-       (annotate-fn (lambda (str)
-                      (format " %s" (or (cdr (assoc-string str config)) "")))))
+  (let* ((config (mapcar
+                  (npmjs--converge cons
+                                   [(npmjs--compose
+                                      substring-no-properties
+                                      (npmjs--cond
+                                        [numberp number-to-string]
+                                        [symbolp symbol-name]
+                                        [t identity])
+                                      car)
+                                    cdr])
+                  (or config (npmjs-get-npm-config))))
+         (annotate-fn (lambda (str)
+                        (format " %s" (or (cdr (assoc-string str config)) "")))))
     (lambda (str pred action)
       (if (eq action 'metadata)
           `(metadata
             (annotation-function . ,annotate-fn))
         (complete-with-action action config str pred)))))
 
-
 (defun npmjs-pkg-get-dependencies-table ()
   "Read installed packages, either global or local.
 PROMPT INITIAL-INPUT HISTORY is the same as for completing read."
-  (let* ((cmd-sym
-          (when transient--prefix
-            (oref transient--prefix command)))
-         (args
-          (when transient--prefix (transient-args cmd-sym)))
+  (let* ((args
+          (npmjs-get-arguments))
          (global-p (seq-intersection args '("--global" "-g"))))
     (if
         (or global-p (not (npmjs-get-project-root)))
@@ -2865,28 +2880,32 @@ If PROMPT is non nil, use this prompt."
 
 (defun npmjs-guess-scopes ()
   "Return choices which looks like a scope."
-  (seq-uniq
-   (mapcan
-    (npmjs--compose
-      npmjs-get-scope-matches
-      substring-no-properties)
-    (seq-filter
-     (apply-partially #'string-match-p "^@[a-z-0-9]+")
-     (append
-      kill-ring
-      (remove nil
+  (mapcar #'list
+          (seq-uniq
+           (flatten-list
+            (mapcar
+             (npmjs--compose
+               npmjs-get-scope-matches
+               substring-no-properties)
+             (seq-filter
+              (apply-partially #'string-match-p "^@[a-z-0-9]+")
               (append
-               (mapcar #'car
-                       (npmjs-pluck-depenencies
-                        (npmjs-get-package-json-alist)))
-               (mapcar
-                (npmjs--compose
-                  symbol-name
-                  car)
-                (npmjs-get-npm-config)))))))))
-
+               kill-ring
+               (remove nil
+                       (append
+                        (mapcar #'car
+                                (npmjs-pluck-depenencies
+                                 (npmjs-get-package-json-alist)))
+                        (mapcar
+                         (npmjs--compose
+                           symbol-name
+                           car)
+                         (npmjs-get-npm-config)))))))))))
 
 (defvar npmjs-all-known-hints nil)
+(defvar npmjs-all-args nil)
+(defvar npmjs-all-args-alist nil)
+
 (defun npmjs-get-hint-reader (str &optional cmd multi-value)
   "Return reader from hint STR for CMD.
 If MULTI-VALUE is non it return multi reader."
@@ -2923,20 +2942,29 @@ If MULTI-VALUE is non it return multi reader."
        ((or "install"
             "unpublish"
             "view")
-        (npmjs-make-reader #'npmjs-read-npm-dependency nil nil
+        (npmjs-make-reader #'npmjs-read-new-dependency nil nil
                            multi-value))
        ((or "update" "uninstall" "edit" "ls")
         (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
                            multi-value))
        ("init" 'read-string)
-       (_ (npmjs-make-reader #'npmjs-read-npm-dependency nil nil
+       (_ (npmjs-make-reader #'npmjs-read-new-dependency nil nil
                              multi-value))))
+    ((or "<@scope><pkg>@<tag>"
+         "<pkg>@<tag>"
+         "<package>@<tag>"
+         "<name>@<tag>")
+     (pcase cmd
+       ((or "update" "uninstall" "edit" "ls")
+        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
+                           multi-value))
+       ("init" 'read-string)
+       (_ (npmjs-make-npm-package-reader-with-tag multi-value))))
     ((or "<@scope><name>@<version>"
          "<pkg>@<version>"
          "<@scope>/<name>"
          "<@scope><pkg>@<version>"
-         "<@scope><pkg>@<version range>"
-         "<@scope><pkg>@<tag>")
+         "<@scope><pkg>@<version range>")
      (pcase cmd
        ((or "update" "uninstall" "edit" "ls")
         (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
@@ -2958,6 +2986,17 @@ If MULTI-VALUE is non it return multi reader."
     ("<depth>"
      (npmjs-make-reader #'transient-read-number-N0 nil nil
                         multi-value))
+    ("<call>" (npmjs-make-reader (npmjs--compose
+                                   (npmjs--cond
+                                     [string-empty-p identity]
+                                     [(npmjs--and (apply-partially
+                                                   #'string-prefix-p "'")
+                                                  (apply-partially
+                                                   #'string-suffix-p "'"))
+                                      identity]
+                                     [t (apply-partially 'format "'%s'")])
+                                   (apply-partially #'read-string)) nil nil
+                                   multi-value))
     ((or "<folder>")
      (npmjs-make-reader #'transient-read-existing-directory nil nil
                         multi-value))
@@ -3068,7 +3107,6 @@ For example:
     (when-let ((class (memq keyword args)))
       (cadr class))))
 
-
 (defun npmjs-eval-infix (name &optional args inhibit-eval)
   "Define NAME as a transient infix command with ARGS.
 Return list with description and NAME.
@@ -3098,33 +3136,6 @@ If INHIBIT-EVAL no eval."
                ,@pl)
             t)
       (list descr name))))
-
-(defun npmjs-all-pass (&rest filters)
-  "Create an unary predicate function from FILTERS.
-Return t if every one of the provided predicates is satisfied by provided
- argument."
-  (lambda (item)
-    (not (catch 'found
-           (dolist (filter filters)
-             (unless (funcall filter item)
-               (throw 'found t)))))))
-
-(defun npmjs-parse-vector-choices (items)
-  "Return arguments for infix from ITEMS.
-ITEMS can be a vector or list of elements divided with char |."
-  
-  (when-let* ((groupped
-               (when (seq-find (apply-partially #'equal "|") items)
-                 (npmjs-group-with
-                  (lambda (it)
-                    (if (stringp it) :choices :args))
-                  items)))
-              (choices (remove "|" (alist-get :choices groupped))))
-    `(:choices ',choices
-               :class 'transient-switches
-               :argument-format "%s"
-               :argument-regexp ,(regexp-opt choices))))
-
 
 (defun npmjs-hint-p (str)
   "Check whether STR is a plain hint."
@@ -3162,6 +3173,17 @@ ITEMS can be a vector or list of elements divided with char |."
         str
       res)))
 
+(defun npmjs-extract-all-hints (str)
+  "Extract all hints from STR."
+  (let ((founds))
+    (with-temp-buffer (insert str)
+                      (while (re-search-backward "<\\([^>]+\\)>"
+                                                 nil
+                                                 t
+                                                 1)
+                        (push (match-string-no-properties 0) founds)))
+    founds))
+
 (defun npmjs-parse-argument (vect &optional cmd)
   "Parse argument VECT for CMD."
   (when (vectorp vect)
@@ -3169,15 +3191,18 @@ ITEMS can be a vector or list of elements divided with char |."
   (when (stringp vect)
     (setq vect (list vect)))
   (let ((curr)
-        (extra-props (seq-filter #'symbolp vect))
+        (common-props (seq-filter #'symbolp vect))
         (result))
     (setq vect (seq-remove #'symbolp vect))
     (dolist (h (seq-filter #'npmjs-hint-p vect))
       (add-to-list 'npmjs-known-hints h))
     (while (setq curr (pop vect))
-      (let* ((value
+      (let* ((extra-props common-props)
+             (value
               (when (and (car vect)
-                         (not (string-prefix-p "--" (car vect))))
+                         (not (or (string-prefix-p "--" (car vect))
+                                  (when (npmjs-hint-p curr)
+                                    (string-prefix-p "<" (car vect))))))
                 (pop vect)))
              (longarg-parts
               (when (stringp curr)
@@ -3325,14 +3350,16 @@ ITEMS can be a vector or list of elements divided with char |."
                    (let* ((hints (seq-filter (apply-partially
                                               #'string-prefix-p "<")
                                              choices)))
-                     (when (not (= (length choices)
-                                   (length hints)))
-                       (setq vect (append vect hints))
-                       (setq choices (seq-difference choices hints))))
-                   `(:choices ',choices
-                              :class 'transient-switches
-                              :argument-format "%s"
-                              :argument-regexp ,(regexp-opt choices))))
+                     (setq choices (seq-difference choices hints))
+                     (when hints
+                       (setq hints (mapcar #'npmjs-extract-all-hints hints))
+                       (setq vect (append vect (reverse
+                                                (flatten-list hints))))))
+                   (when choices
+                     `(:choices ',choices
+                                :class 'transient-switches
+                                :argument-format "%s"
+                                :argument-regexp ,(regexp-opt choices)))))
                 ((guard (and argument
                              (not value)
                              (not extra-props)))
@@ -3392,10 +3419,6 @@ ITEMS can be a vector or list of elements divided with char |."
           (push res result))))
     (npmjs-get-list-item-if-one result)))
 
-
-(defvar npmjs-all-args nil)
-(defvar npmjs-all-args-alist nil)
-
 ;;;###autoload
 (defun npmjs-show-all-args ()
   "Print all known args."
@@ -3446,8 +3469,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
   (add-to-list 'npmjs-all-args vect)
   (add-to-list 'npmjs-all-args-alist (cons cmd vect))
   (or
-   (let ((args (or (npmjs-parse-vector-choices vect)
-                   (npmjs-parse-argument vect cmd)))
+   (let ((args (npmjs-parse-argument vect cmd))
          (result))
      (setq result (if (npmjs-nested-args-p args)
                       (mapcar (apply-partially
@@ -3455,6 +3477,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
                               args)
                     (npmjs-maybe-eval cmd inhibit-eval args)))
      result)))
+
 (defun npmjs-specifier-at-point ()
   "Return and skip hint at point."
   (when-let* ((start
@@ -3476,7 +3499,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
 
 (defun npmjs-tokenize (&optional stop-char)
   "Tokenize current buffer with help output.
-STOP-CHAR is used for recoursive purposes."
+STOP-CHAR is used for recursive purposes."
   (let ((node)
         (nodes)
         (stop nil))
@@ -3546,33 +3569,40 @@ STOP-CHAR is used for recoursive purposes."
                         (when nodes
                           (nreverse nodes))))))
 
-
 (defvar npmjs-all-columns-alist nil)
 (defvar npmjs-all-descriptions-alist nil)
 
 (defun npmjs-write-all-installed-npm-outputs ()
-  "\\(--\\([a-z][a-z0-9-]+\\)\\)."
+  "Write all npm help outputs to the fixtures in current directory.
+If the directory fixtures doesn't exists, create it.
+
+This function is for debug purposes."
   (let ((versions (npmjs-nvm--installed-versions)))
     (dolist (cell versions)
       (npmjs-nvm-with-env-vars
-       (car cell)
-       (let ((npm-version (string-trim (shell-command-to-string "npm -v")))
-             (npm-output (shell-command-to-string "npm -l")))
-         (unless (file-exists-p (expand-file-name "fixtures" default-directory))
-           (make-directory (expand-file-name "fixtures" default-directory)
-                           t))
-         (write-region
-          npm-output
-          nil
-          (expand-file-name (concat "fixtures/" npm-version)
-                            default-directory)
-          nil
-          nil
-          nil
-          nil))))))
+        (car cell)
+        (let ((npm-version (string-trim (shell-command-to-string "npm -v")))
+              (npm-output (shell-command-to-string "npm -l")))
+          (unless
+              (file-exists-p (expand-file-name "fixtures" default-directory))
+            (make-directory (expand-file-name "fixtures" default-directory)
+                            t))
+          (write-region
+           npm-output
+           nil
+           (expand-file-name (concat "fixtures/" npm-version)
+                             default-directory)
+           nil
+           nil
+           nil
+           nil))))))
 
-(defun npmjs-write-get-all-descriptions-alist ()
-  "\\(--\\([a-z][a-z0-9-]+\\)\\)."
+(defun npmjs--get-all-npm-versions-descriptions-alist ()
+  "Parse all installed npm versions.
+Results is stored in `npmjs-all-columns-alist' and
+`npmjs-all-descriptions-alist'.
+
+This function is for debug purposes."
   (let ((versions (npmjs-nvm--installed-versions))
         (results))
     (setq npmjs-all-columns-alist nil)
@@ -3606,27 +3636,22 @@ STOP-CHAR is used for recoursive purposes."
 
 ;;;###autoload
 (defun npmjs-print-all-descriptions (&optional force)
-  "Generate descriptions. If FORCE, recalc."
+  "Print `npmjs-all-descriptions-alist'.
+If the value is nil or FORCE is non nil,
+invoke call `npmjs--get-all-npm-versions-descriptions-alist'.
+
+This function is for debug purposes."
   (interactive "P")
   (unless (and npmjs-all-descriptions-alist
                (not force))
-    (npmjs-write-get-all-descriptions-alist))
+    (npmjs--get-all-npm-versions-descriptions-alist))
   (npmjs-pp npmjs-all-descriptions-alist))
 
-;;;###autoload
-(defun npmjs-print-current-descriptions (&optional force)
-  "Generate descriptions. If FORCE, recalc."
-  (interactive "P")
-  (unless (and npmjs-all-descriptions-alist
-               (not force))
-    (npmjs-write-get-all-descriptions-alist))
-  (npmjs-pp npmjs-all-descriptions-alist))
 
 (defun npmjs-upcased-p (str)
-  "Return non nil is string STR begins with upcased letters."
+  "Return non nil is string STR begins with letters in uppercase."
   (let ((case-fold-search nil))
     (string-match-p "^[A-Z]" str)))
-
 
 (defun npmjs-get-list-item-if-one (item)
   "If ITEM is a list of one element, return those element."
@@ -3658,39 +3683,17 @@ STOP-CHAR is used for recoursive purposes."
       (reverse (split-string str "|" t))
     nil))
 
-
-
 (defun npmjs-flatten-vectors (item)
-  "Flattten vector ITEM."
+  "Flatten vector ITEM."
   (cond ((vectorp item)
          (seq-reduce (lambda (acc it)
-                       (let* ((last-idx
-                               (when (> (length acc) 0)
-                                 (1- (length acc))))
-                              (last-value
-                               (when last-idx
-                                 (npmjs-nth
-                                  last-idx
-                                  acc))))
-                         (cond ((and last-idx
-                                     (vectorp it)
-                                     (= 1 (length it))
-                                     (stringp last-value)
-                                     (stringp (npmjs-nth 0 it)))
-                                (let* ((curr-value
-                                        (npmjs-nth 0 it))
-                                       (new-val
-                                        (concat
-                                         last-value
-                                         curr-value)))
-                                  (aset acc last-idx new-val)
-                                  (setq acc acc)))
-                               ((and (vectorp it)
-                                     (setq acc
-                                           (vconcat acc
-                                                    (npmjs-flatten-vectors
-                                                     it)))))
-                               (t (setq acc (vconcat acc (vector it)))))))
+                       (setq acc
+                             (pcase it
+                               ((pred vectorp)
+                                (vconcat acc
+                                         (npmjs-flatten-vectors
+                                          it)))
+                               (_ (vconcat acc (vector it))))))
                      item
                      []))))
 
@@ -3704,7 +3707,6 @@ If not, just return VECT."
                   (npmjs-nth 0 vect))
        subvect))
    vect))
-
 
 (defun npmjs-normalize-vectors (vect)
   "Normalize vector VECT."
@@ -3745,41 +3747,6 @@ If not, just return VECT."
                 lines)
    "\n"))
 
-
-(defun npmjs-join-strings (items)
-  "Recoursively concat list or vector of ITEMS."
-  (seq-reduce (lambda (acc it)
-                (when-let* ((str (if (stringp it)
-                                     it
-                                   (or (npmjs-join-strings it)
-                                       "")))
-                            (suffix (if (and (string-match-p "^[a-z-]" str)
-                                             (not (string-empty-p acc)))
-                                        " "
-                                      "")))
-                  (setq acc (concat acc
-                                    suffix
-                                    str))))
-              (when (not (symbolp items))
-                items)
-              ""))
-
-(defun npmjs-map-raw-options (inline-options)
-  "Normalize INLINE-OPTIONS."
-  (mapcar
-   #'npmjs-normalize-vectors
-   (seq-filter
-    #'vectorp
-    (mapcar (lambda (it)
-              (pcase it
-                ((guard (and (stringp it)
-                             (string-match-p it "^<")
-                             it))
-                 (vector it))
-                (_ it)))
-            inline-options))))
-
-
 (defun npmjs-map-descriptions-lines (alist &optional inhibit-eval)
   "Map ALIST of commands and arguments.
 If INHIBIT-EVAL is non nil, don't eval infixes."
@@ -3788,7 +3755,7 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
           alist))
 
 (defun npmjs-single-value-to-hint (str)
-  "Replace signle value in argument STR with hint.
+  "Replace single value in argument STR with hint.
 For example, --registry=url to --registry=<url>."
   (with-temp-buffer
     (insert str)
@@ -3806,9 +3773,21 @@ For example, --registry=url to --registry=<url>."
   (setq curr (replace-regexp-in-string "[(]with no args,[^)]+)" "" curr))
   (setq curr (replace-regexp-in-string "[(]See [^)]+)" "" curr))
   (setq curr (replace-regexp-in-string "[\s]?|[\s]?" "|" curr))
+  (setq curr (replace-regexp-in-string "\\[pkg\\]" "[<pkg>]" curr))
   (setq curr (replace-regexp-in-string "<pkg>\\[@<version>\\]"
                                        "[<pkg>@<version>]"
                                        curr))
+  (when (string-match-p
+         "\\[?\\(<[a-z][^>]+>\\)[ ]\\[?\\(<[a-z][^>]+>\\)\\]?\\]?+" curr)
+    (setq curr (with-temp-buffer (insert curr)
+                                 (goto-char (point-min))
+                                 (when (re-search-forward
+                                        "\\[?\\(<[a-z][^>]+>\\)[ ]\\[?\\(<[a-z][^>]+>\\)\\]?\\]?+"
+                                        nil t 1)
+                                   (let ((a (match-string-no-properties 1))
+                                         (b (match-string-no-properties 2)))
+                                     (replace-match (concat a " " b))))
+                                 (buffer-string))))
   (npmjs-single-value-to-hint curr))
 
 (defun npmjs-parse-normalized-vectors (cmd inhibit-eval vectors)
@@ -3827,6 +3806,63 @@ If INHIBIT-EVAL is nil, don't eval infixes."
      acc)
    vectors
    '()))
+
+(defun npmjs-parse-subcommands-options (rawoptions)
+  "Parse subcommand line options RAWOPTIONS."
+  (nreverse
+   (seq-reduce
+    (lambda (acc it)
+      (setq acc
+            (pcase it
+              ((pred vectorp)
+               (let ((result (npmjs-normalize-vectors it))
+                     (prev (car acc)))
+                 (if-let* ((prev-el (npmjs-nth 0 prev))
+                           (curr-el (npmjs-nth 0 result)))
+                     (cond ((and (stringp prev-el)
+                                 (stringp curr-el)
+                                 (string-prefix-p prev-el curr-el))
+                            (if (> (length prev)
+                                   (length result))
+                                acc
+                              (pop acc)
+                              (push result acc)))
+                           (t (push result acc)))
+                   (push result
+                         acc))))
+              ("'"
+               (let ((prev (pop acc)))
+                 (cond ((and (= (length prev) 1)
+                             (stringp (npmjs-nth 0 prev))
+                             (string-prefix-p "-" (npmjs-nth 0 prev)))
+                        (push (apply #'vector (list (npmjs-nth 0 prev) "'"))
+                              acc)))))
+              ((pred stringp)
+               (let ((prev (car acc)))
+                 (cond ((and
+                         (= 1
+                            (length
+                             prev))
+                         (stringp (npmjs-nth 0 prev))
+                         (string-suffix-p "=" (npmjs-nth 0 prev)))
+                        (setq prev (pop acc))
+                        (push (apply #'vector
+                                     (append prev (list it)))
+                              acc))
+                       ((and (equal (car (last (append prev nil))) "'"))
+                        (setq prev (pop acc))
+                        (setq prev (append prev nil))
+                        (setq prev (nbutlast prev 1))
+                        (setq prev (append prev (list (format "'%s'" it))))
+                        (push (apply #'vector prev) acc))
+                       (t (push (vector it) acc)))))
+              ((pred symbolp)
+               (if-let ((prev (pop acc)))
+                   (push (apply #'vector (append prev (list it))) acc)
+                 acc))
+              (_ (message "unknown type %s: " it)))))
+    rawoptions '())))
+
 
 (defun npmjs-map-command-cell-lines (cell &optional inhibit-eval)
   "Parse CELL with command and description lines to options.
@@ -3848,29 +3884,14 @@ If INHIBIT-EVAL is nil, don't eval infixes."
                                              (not (string-prefix-p "(" it))
                                              (not (string-prefix-p "-" it))
                                              (not (string-match-p "=" it))))
-                                      parsed))
-                     (key (string-join words "\s"))
-                     (rawoptions (seq-drop parsed (length words)))
-                     (`(,first-word ,second-word ,third-word . ,other)
-                      (split-string key " " t))
-                     (specifiers (mapcar #'vector (seq-take-while
-                                                   (lambda (it)
-                                                     (and (stringp it)
-                                                          (string-prefix-p "<"
-                                                                           it)
-                                                          (string-suffix-p ">"
-                                                                           it)))
-                                                   rawoptions))))
-          (when specifiers
-            (setq rawoptions (seq-drop-while (lambda (it)
-                                               (and (stringp it)
-                                                    (string-prefix-p "<"
-                                                                     it)))
-                                             rawoptions)))
-          (pcase first-word
+                                      parsed)))
+          (pcase (car words)
             ("common"
-             (setq common-options
-                   (append common-options rawoptions)))
+             (let ((options (seq-drop parsed (length words))))
+               (setq common-options
+                     (if common-options
+                         (append common-options options)
+                       options))))
             ("Options:"
              (when-let ((parsed-options (seq-take-while (lambda (it)
                                                           (string-prefix-p "["
@@ -3883,41 +3904,40 @@ If INHIBIT-EVAL is nil, don't eval infixes."
                                  parsed-options
                                  '()))))
             ("Usage:")
-            ((guard (and (stringp first-word)
-                         (npmjs-upcased-p first-word)))
+            ((guard (and (car words)
+                         (npmjs-upcased-p (car words))))
              (push curr descriptions))
-            ((guard (listp key)))
-            ((guard (and (not first-word)
-                         (vectorp key)))
-             (push key common-options))
             ((or "aliases:"
                  "alias:")
-             (let ((strs (mapcar (apply-partially #'replace-regexp-in-string
-                                                  "," "")
-                                 (delq nil
-                                       (flatten-list (list second-word
-                                                           third-word other))))))
+             (let ((strs (mapcar
+                          (apply-partially #'replace-regexp-in-string "," "")
+                          words)))
                (setq aliases (if aliases (nconc aliases strs)
                                strs))))
-            ((guard (and (stringp first-word)
-                         (string= first-word "npm")
-                         second-word
-                         (string= cmd second-word)))
-             (setq key (replace-regexp-in-string "^npm[ ]" "" key))
-             (setq rawoptions (append specifiers rawoptions))
-             (setq rawoptions (npmjs-map-raw-options
-                               (npmjs-multi-extract-vector
-                                rawoptions)))
-             (setq rawoptions (npmjs-parse-normalized-vectors
-                               key
-                               inhibit-eval
-                               rawoptions))
-             (let ((subcommand-cell (assoc-string key subcommands)))
-               (if subcommand-cell
-                   (setcdr subcommand-cell
-                           (append (cdr subcommand-cell)
-                                   rawoptions))
-                 (push (cons key rawoptions) subcommands))))
+            ("npm"
+             (when (and (cadr words)
+                        (string= cmd (cadr words)))
+               (let ((subcommand-name (string-join (cdr words) " "))
+                     (new-options
+                      (npmjs-parse-subcommands-options
+                       (seq-drop
+                        parsed
+                        (length
+                         words)))))
+                 (when-let ((pos
+                             (seq-position new-options
+                                           (car (member ["--"]
+                                                        new-options)))))
+                   (setq new-options (seq-take new-options (1+ pos))))
+                 (setq new-options
+                       (npmjs-parse-normalized-vectors
+                        subcommand-name
+                        inhibit-eval new-options))
+                 (if-let ((subcommand-cell (assoc-string subcommand-name
+                                                         subcommands)))
+                     (setcdr subcommand-cell
+                             (append (cdr subcommand-cell) new-options))
+                   (push (cons subcommand-name new-options) subcommands)))))
             (_)))))
     (setq common-options (mapcar (lambda (it)
                                    (npmjs-parse-help--vector
@@ -3959,19 +3979,6 @@ If INHIBIT-EVAL is nil, don't eval infixes."
                            (cdr cell))))
         (plist-put spec :description short-descr)
         spec))))
-
-(defmacro npmjs-parse-help-with-output (output &rest body)
-  "Expand BODY in temp buffer with OUTPUT."
-  (declare (indent 1)
-           (debug t))
-  `(let ((version npmjs--current-node-version))
-     (with-temp-buffer
-       (erase-buffer)
-       (npmjs-nvm-with-env-vars
-         version
-         (save-excursion
-           (insert ,output)))
-       ,@body)))
 
 (defun npmjs-get-description-spec (command)
   "Pase COMMAND description from help output."
@@ -4019,7 +4026,7 @@ TRANSFORM-FN should return transformed item."
                (seq-copy items) '())))
 
 (defun npmjs-get-and-forward-command-description (column)
-  "Jump to next empty line that start with COLUMN whitespaces."
+  "Jump to next empty line that start with COLUMN whitespace."
   (let ((initial-pos (point))
         (end (line-end-position)))
     (when (and (> (- initial-pos column)
@@ -4033,9 +4040,10 @@ TRANSFORM-FN should return transformed item."
                    (colend (+ beg (1+ column))))
               (when (> (point-max) colend)
                 (goto-char colend)
-                (and (string-empty-p (string-trim (buffer-substring-no-properties
-                                                   beg
-                                                   colend)))
+                (and (string-empty-p (string-trim
+                                      (buffer-substring-no-properties
+                                       beg
+                                       colend)))
                      (looking-at "[\s\t]")))))
         (setq end (line-end-position)))
       (when end
@@ -4044,7 +4052,8 @@ TRANSFORM-FN should return transformed item."
                     (lines
                      (seq-remove #'string-empty-p
                                  (mapcar #'string-trim
-                                         (split-string description "[\n\r\f]+" t))))
+                                         (split-string
+                                          description "[\n\r\f]+" t))))
                     (first-line-words (split-string (pop lines) nil
                                                     t))
                     (cmd (pop first-line-words))
@@ -4076,6 +4085,7 @@ TRANSFORM-FN should return transformed item."
 NO-EVAL is used for debug purposes."
   (let ((name (npmjs-make-symbol "npm" cmd)))
     (put name 'npm-command cmd)
+    (put name 'npm-description description)
     (put name 'man-page (concat "npm-" (car (split-string cmd " " t))))
     (if no-eval
         (npmjs-message "Evaluating %s as %s" cmd name)
@@ -4099,10 +4109,6 @@ NO-EVAL is used for debug purposes."
                 ',name)
         t))
 
-(defun npmjs-get-package-json-script (script)
-  "Search for SCRIPT in package.json."
-  (alist-get script (alist-get 'scripts (npmjs-get-package-json-alist))))
-
 (defvar npmjs-commands-props
   '(("publish" :inapt-if-not npmjs-get-project-root)
     ("run-script" :inapt-if-not npmjs-get-project-root)
@@ -4120,8 +4126,8 @@ NO-EVAL is used for debug purposes."
     ("ci" :inapt-if-not npmjs-get-project-root)
     ("dedupe" :inapt-if-not npmjs-get-project-root)))
 
-
-(defvar npmjs-map-replace-commands '(("run-script" . npmjs-run-script))
+(defvar npmjs-map-replace-commands '(("run-script" . npmjs-run-script)
+                                     ("install" . npmjs-install))
   "Alist of commands and predefined commands to use instead.")
 
 (defvar npmjs-extra-arguments
@@ -4130,42 +4136,16 @@ NO-EVAL is used for debug purposes."
     ("uninstall" ("global" ("-g" "--global")))
     ("query" ("global" ("-g" "--global")))
     ("prefix" ("global" ("-g" "--global")))
-    ("ll" ("global" ("-g" "--global")))))
-
+    ("ll" ("global" ("-g" "--global")))
+    ("ls" ("global" ("-g" "--global")))))
 
 (defvar npmjs-options-suffixes
   '(("RET" "Run" npmjs-done)
     ("C-c C-a" "Show arguments" npmjs-show-args)))
 
-(defun npmjs-eval-options (commands)
-  (let ((name (plist-get commands :cmd))
-        (sym))
-    (setq commands
-          (plist-put commands :options
-                     (append
-                      (npmjs-add-options-shortcuts
-                       (if-let ((extra-options
-                                 (cdr
-                                  (assoc-string
-                                   name
-                                   npmjs-extra-arguments))))
-                           (append extra-options (plist-get
-                                                  commands
-                                                  :options))
-                         (plist-get commands :options)))
-                      npmjs-options-suffixes)))
-    (setq sym
-          (or (cdr (assoc-string name npmjs-map-replace-commands))
-              (npmjs-eval-symb name
-                               (plist-get commands :options)
-                               (plist-get commands :description))))
-    (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
-        (append (list (plist-get commands :key) name sym) props)
-      (list (plist-get commands :key) name sym))))
-
 (defun npmjs-map-commands (commands)
   "Recoursively map and eval COMMANDS.
-COMMANDS is a list of plists with such props:
+COMMANDS is a nested list of property lists with such props:
 :cmd - a string, the command name e.g. \"install\", \"access list\".
 :key - a string, which will be used for generating key.
 :options - alist of descriptions (string) and its arguments.
@@ -4289,22 +4269,110 @@ USED-KEYS is a list of keys that shouldn't be used."
        (_ (push k v))))
    used-keys))
 
+(transient-define-argument npmjs-install-pkg-argument ()
+  "Argument for packages without version and tags."
+  :class 'transient-option
+  :multi-value 'repeat
+  :argument "<pkg>"
+  :prompt "Package name:"
+  :reader (npmjs-make-reader #'npmjs-read-new-dependency nil nil
+                             t))
+
+(transient-define-argument npmjs-install-pkg-tag-argument ()
+  "Argument for packages without version and tags."
+  :class 'transient-option
+  :multi-value 'repeat
+  :argument "<pkg>@<tag>"
+  :prompt "Package name:"
+  :reader (npmjs-make-npm-package-reader-with-tag t))
+
+(transient-define-argument npmjs-install-pkg-version-argument ()
+  "Argument for packages without version and tags."
+  :class 'transient-option
+  :multi-value 'repeat
+  :argument "<pkg>@<version>"
+  :prompt "Package name:"
+  :reader (npmjs-make-npm-package-reader-with-version t))
+
+;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
+(transient-define-prefix npmjs-install ()
+  "Run arbitrary package scripts."
+  :value (lambda ()
+           (unless (npmjs-get-project-root)
+             (list "--global")))
+  :show-help (lambda (&rest _)
+               (npmjs-show-manual "npm-install"))
+  [:description
+   "Install packages"
+   :setup-children
+   (lambda (&rest _argsn)
+     (mapcar
+      (apply-partially #'transient-parse-suffix
+                       transient--prefix)
+      '(("p" "package" npmjs-install-pkg-argument)
+        ("@t" "package@tag" npmjs-install-pkg-tag-argument)
+        ("@v" "package@version" npmjs-install-pkg-version-argument))))]
+  ["Options"
+   :setup-children
+   (lambda (&rest _argsn)
+     (npmjs-nvm-with-current-node-version
+      (npmjs-setup-npm)
+      (let* ((props (npmjs-map-command-cell-lines
+                     (cons
+                      "install"
+                      (append (list "npm install")
+                              (seq-remove
+                               (apply-partially #'string-prefix-p "npm install")
+                               (assoc-string
+                                "install"
+                                (cdr npmjs-current-descriptions-alist)))))))
+             (options (append
+                       (seq-remove
+                        (npmjs--compose
+                          (npmjs--cond
+                            [stringp (apply-partially #'string= "--global")]
+                            [listp
+                             (apply-partially #'seq-find
+                                              (npmjs--or
+                                               (apply-partially 'string=
+                                                                "--global")
+                                               (apply-partially 'string= "-")))])
+                          (apply-partially #'npmjs-nth 2))
+                        (npmjs-add-options-shortcuts
+                         (plist-get props
+                                    :options)
+                         '("p" "g")))
+                       (list '("g" "global" ("-g" "--global"))))))
+        (mapcar
+         (apply-partially #'transient-parse-suffix
+                          transient--prefix)
+         options))))]
+  ["Actions"
+   ("RET" "Run" npmjs-done)
+   ("C-c C-a" "Show arguments" npmjs-show-args)]
+  (interactive)
+  (transient-setup #'npmjs-install))
+
+(put 'npmjs-install 'npm-description "Install packages")
+(put 'npmjs-install 'npm-command "install")
 
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
   "Run arbitrary package scripts."
-  :man-page "npm-run-script"
   :show-help (lambda (&rest _)
-               (npmjs-show-manual))
+               (npmjs-show-manual "npm-run-script"))
   [:description
    (lambda ()
-     (when-let* ((package-json-path
-                  (npmjs-get-package-json-path))
-                 (package-json
-                  (npmjs-read-json
-                   package-json-path
-                   'alist)))
-       (or (alist-get 'name package-json) "Run script ")))
+     (if-let* ((package-json-path
+                (npmjs-get-package-json-path))
+               (package-json
+                (npmjs-read-json
+                 package-json-path
+                 'alist)))
+         (format "Run script from %s" (or
+                                       (alist-get 'name package-json)
+                                       package-json-path))
+       "Not in project"))
    :setup-children
    (lambda (&rest _args)
      (when-let* ((package-json-path
@@ -4354,31 +4422,26 @@ USED-KEYS is a list of keys that shouldn't be used."
   ["Options"
    :setup-children
    (lambda (&rest _args)
-     (when-let* ((package-json-path
-                  (npmjs-get-package-json-path))
-                 (package-json
-                  (npmjs-read-json
-                   package-json-path
-                   'alist))
-                 (scripts (mapcar (lambda (it)
-                                    (cons (symbol-name (car it))
-                                          (cdr it)))
-                                  (alist-get
-                                   'scripts
-                                   package-json))))
-       (let* ((props (npmjs-get-command-spec "run-script"))
-              (options (npmjs-add-options-shortcuts
-                        (plist-get props :options)))
-              (children (append options
-                                npmjs-options-suffixes)))
-         (mapcar
-          (apply-partially #'transient-parse-suffix
-                           transient--prefix)
-          children))))])
+     (npmjs-nvm-with-current-node-version
+      (npmjs-setup-npm)
+      (let* ((props
+              (npmjs-map-command-cell-lines
+               (assoc-string "run-script"
+                             (cdr
+                              npmjs-current-descriptions-alist))))
+             (options (npmjs-add-options-shortcuts
+                       (plist-get props :options)))
+             (children (append options
+                               npmjs-options-suffixes)))
+        (mapcar
+         (apply-partially #'transient-parse-suffix
+                          transient--prefix)
+         children))))]
+  (interactive)
+  (transient-setup #'npmjs-run-script))
 
+(put 'npmjs-run-script 'npm-description "Install packages")
 (put 'npmjs-run-script 'npm-command "run-script")
-
-
 
 (defvar npmjs-evaluated-commands (make-hash-table :test 'equal)
   "Last executed command lines, per project.")
@@ -4392,7 +4455,8 @@ USED-KEYS is a list of keys that shouldn't be used."
       (let ((emacs-lisp-mode-hook nil))
         (dolist (obj objects)
           (princ "\n" buff)
-          (pp obj buff))
+          (let (print-level print-length)
+            (pp obj buff)))
         (emacs-lisp-mode)
         (when
             (require 'prettier-elisp nil t)
@@ -4401,35 +4465,6 @@ USED-KEYS is a list of keys that shouldn't be used."
         (font-lock-ensure)))
     (unless (get-buffer-window buff)
       (pop-to-buffer buff))))
-
-;;;###autoload
-(defun npmjs-debug ()
-  "Display parsed results in debug buffer."
-  (interactive)
-  (npmjs-nvm-with-env-vars
-    (or npmjs--current-node-version
-        (setq npmjs--current-node-version (or npmjs--current-node-version
-                                              (npmjs-confirm-node-version))))
-    (let* ((spec (npmjs-get-prefix-spec))
-           (description (car spec))
-           (alist (cdr spec))
-           (results
-            (pcase (car (read-multiple-choice "Print" '((?d "Alist of descriptions" )
-                                                        (?p "Plists from descriptions")
-                                                        (?c "Mapped commands")
-                                                        (?C "Commands and plists")
-                                                        (?! "All"))))
-              (?d alist)
-              (?p (npmjs-map-descriptions-lines alist t))
-              (?c (npmjs-map-commands (npmjs-map-descriptions-lines alist t)))
-              (?C
-               (let ((plists (npmjs-map-descriptions-lines alist t)))
-                 (list plists (npmjs-map-commands plists))))
-              (?!
-               (let* ((plists (npmjs-map-descriptions-lines alist t))
-                      (cmds (npmjs-map-commands plists)))
-                 (list plists cmds alist))))))
-      (apply #'npmjs-pp (append (list description) results)))))
 
 (defun npmjs-get-prefix-spec ()
   "Return cons with description and parsed npm help output."
@@ -4442,59 +4477,74 @@ USED-KEYS is a list of keys that shouldn't be used."
                  (npmjs-parse-columns-to-alist))))
     (cons description spec)))
 
+
+(defun npmjs-setup-npm ()
+  "Setup, eval and call npm transient menu."
+  (let ((npm-version (string-trim (shell-command-to-string
+                                   "npm -v"))))
+    (if-let ((descriptions (cdr (assoc-string npm-version
+                                              npmjs-descriptions-alist))))
+        (setq npmjs-current-descriptions-alist descriptions)
+      (setq npmjs-current-descriptions-alist (npmjs-get-prefix-spec))
+      (setq npmjs-descriptions-alist
+            (push
+             (cons npm-version
+                   npmjs-current-descriptions-alist)
+             npmjs-descriptions-alist)))
+    npm-version))
+
 ;;;###autoload
 (defun npmjs ()
   "Setup, eval and call npm transient menu."
   (interactive)
-  (npmjs-nvm-with-env-vars
-    (or npmjs--current-node-version
-        (setq npmjs--current-node-version (or npmjs--current-node-version
-                                              (npmjs-confirm-node-version))))
-    (let ((npm-version (string-trim (shell-command-to-string
-                                     "npm -v"))))
-      (if-let ((prefix (and (not npmjs-inhibit-prefix-cache)
-                            (gethash npm-version
-                                     npmjs-evaluated-commands))))
-          (call-interactively prefix)
-        (let* ((spec-cell (npmjs-get-prefix-spec))
-               (title (car spec-cell))
-               (description (concat "NPM: "
-                                    npm-version
-                                    " "
-                                    title))
-               (spec
-                (npmjs-map-descriptions-lines
-                 (cdr spec-cell)))
-               (mapped (npmjs-map-commands spec))
-               (groupped (npmjs-group-vectors mapped))
-               (prefix-symb
-                (let ((sym (npmjs-make-symbol "npmjs-" npm-version)))
-                  (put sym 'npm-command "npm")
-                  (put sym 'man-page "npm")
-                  (npmjs-eval-prefix
-                   sym
-                   `([:description
-                      ,description
-                      ,@(append
-                         groupped
-                         (list
-                          (apply #'vector
-                                 '(("-o"
-                                    "nvm"
-                                    npmjs-nvm
-                                    :inapt-if-not
-                                    npmjs-nvm-path)
-                                   ("-h" "Show npm help" npmjs-show-help)
-                                   ("-m" "Show npm manual" npmjs-show-manual)))))]))
-                  sym)))
-          (call-interactively prefix-symb)
-          (puthash npm-version prefix-symb npmjs-evaluated-commands))))))
-
+  (npmjs-nvm-with-current-node-version
+   (let* ((npm-version (npmjs-setup-npm))
+          (command
+           (or (and (not npmjs-inhibit-prefix-cache)
+                    (gethash npm-version npmjs-evaluated-commands))
+               (let* ((title (car npmjs-current-descriptions-alist))
+                      (description (concat "NPM: "
+                                           npm-version
+                                           " "
+                                           title))
+                      (spec
+                       (npmjs-map-descriptions-lines
+                        (cdr npmjs-current-descriptions-alist)))
+                      (mapped (npmjs-map-commands spec))
+                      (groupped (npmjs-group-vectors mapped))
+                      (prefix-symb
+                       (let ((sym (npmjs-make-symbol "npmjs-"
+                                                     npm-version)))
+                         (put sym 'npm-command "npm")
+                         (put sym 'man-page "npm")
+                         (npmjs-eval-prefix
+                          sym
+                          `([:description
+                             ,description
+                             ,@(append
+                                groupped
+                                (list
+                                 (apply
+                                  #'vector
+                                  '(("-o"
+                                     "nvm"
+                                     npmjs-nvm
+                                     :inapt-if-not
+                                     npmjs-nvm-path)
+                                    ("-h" "Show npm help"
+                                     npmjs-show-help)
+                                    ("-m" "Show npm manual"
+                                     npmjs-show-manual)))))]))
+                         sym)))
+                 (puthash npm-version prefix-symb
+                          npmjs-evaluated-commands)
+                 prefix-symb))))
+     (transient-setup command))))
 
 ;;;###autoload (autoload 'npmjs-nvm "npmjs.el" nil t)
 (transient-define-prefix npmjs-nvm ()
-  "Menu for NVM (node version manager) commands."
-  ["NVM"
+  "Menu for Node Version Manager (nvm) commands."
+  ["Node Version Manager (nvm)"
    ("I" "Install new node version"
     npmjs-nvm-install-node-version :inapt-if-not npmjs-nvm-path)
    ("u" "Use other node version"
@@ -4505,6 +4555,34 @@ USED-KEYS is a list of keys that shouldn't be used."
     npmjs-nvm-jump-to-installed-node :inapt-if-not npmjs-nvm-path)]
   [("N" "install nvm" npmjs-install-nvm)])
 
+;;;###autoload
+(defun npmjs-debug ()
+  "Display parsed results in debug buffer."
+  (interactive)
+  (npmjs-nvm-with-current-node-version
+    (let* ((spec (npmjs-get-prefix-spec))
+           (description (car spec))
+           (alist (cdr spec))
+           (results
+            (pcase (car
+                    (read-multiple-choice
+                     "Print"
+                     '((?d "Alist of descriptions" )
+                       (?p "Specification from descriptions")
+                       (?c "Mapped commands")
+                       (?C "Commands and specification")
+                       (?! "All"))))
+              (?d alist)
+              (?p (npmjs-map-descriptions-lines alist t))
+              (?c (npmjs-map-commands (npmjs-map-descriptions-lines alist t)))
+              (?C
+               (let ((plists (npmjs-map-descriptions-lines alist t)))
+                 (list plists (npmjs-map-commands plists))))
+              (?!
+               (let* ((plists (npmjs-map-descriptions-lines alist t))
+                      (cmds (npmjs-map-commands plists)))
+                 (list plists cmds alist))))))
+      (apply #'npmjs-pp (append (list description) results)))))
 
 (provide 'npmjs)
 ;;; npmjs.el ends here
