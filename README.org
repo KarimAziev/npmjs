@@ -1,22 +1,42 @@
-* npmjs
+#+OPTIONS: ^:nil
 
-Transient menu for almost all NPM commands.
+* About
+Command dispatcher for npm package manager. Supports different npm versions, as arguments are dynamically parsed from help output.
 
-[[./demo.gif]]
+[[./demo.png][./demo.png]]
 
-** Requirenments
-- Emacs >= 28.1 is required
-- nvm (optional)
-- npm
+* Table of Contents                                       :TOC_2_gh:QUOTE:noexport:
+#+BEGIN_QUOTE
+- [[#about][About]]
+- [[#requirenments][Requirenments]]
+  - [[#programs][Programs]]
+  - [[#emacs-packages][Emacs Packages]]
+- [[#installation][Installation]]
+  - [[#manual][Manual]]
+  - [[#usage][Usage]]
+#+END_QUOTE
 
-** Installation
+* Requirenments
 
-*** Manual
+** Programs
 
-Ensure that you have installed required dependencies:
-- ivy (optional)
-- counsel (optional)
-- json (optional)
+| Program        | Version  | Description          |
+|----------------+----------+----------------------|
+| npm            | >=6      | Node Package Manager |
+| [[https://github.com/nvm-sh/nvm][nvm]] (optional) | >=0.39.3 | Node Version Manager |
+| Emacs          | >=28.1   | Editor               |
+
+** Emacs Packages
+| Package        | Version  | Description                            |
+|----------------+----------+----------------------------------------|
+| [[https://github.com/magit/transient][transient]]      | >=0.4.0  | Builtin library (from Emacs 28.1).     |
+| [[https://github.com/abo-abo/swiper][ivy]] (optional) | >=0.13.4 | For async completions for npm packages |
+
+
+* Installation
+
+
+** Manual
 
 Download the source code and put it wherever you like, e.g. into =~/.emacs.d/npmjs/=
 
@@ -32,13 +52,15 @@ Add the downloaded directory to the load path:
 #+end_src
 
 #+begin_src elisp :eval no
-
 (use-package npmjs
   :straight (npmjs
              :repo "KarimAziev/npmjs"
              :type git
              :host github)
-  :commands (npmjs))
+  :commands (npmjs)
+  :bind ((:map npmjs-multi-completion-map
+               ("C-<return>" . npmjs-throw-done)
+               ("C-M-j" . npmjs-throw-done))))
 #+end_src
 
 ** Usage
