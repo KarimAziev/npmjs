@@ -38,10 +38,6 @@ Command dispatcher for npm package manager. Supports different npm versions, as 
 
 ** Manual
 
-Ensure that you have installed required dependencies:
-- counsel (optional)
-- json (optional)
-
 Download the source code and put it wherever you like, e.g. into =~/.emacs.d/npmjs/=
 
 #+begin_src shell :eval no
