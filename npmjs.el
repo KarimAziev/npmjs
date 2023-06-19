@@ -41,6 +41,8 @@
 (defvar json-null)
 (defvar json-false)
 
+(declare-function json-read-from-string  "json")
+
 (defcustom npmjs-nvm-dir (or (getenv "NVM_DIR")
                              (expand-file-name "~/.nvm"))
   "Full path to NVM installation directory.
@@ -745,6 +747,10 @@ If ALL, read all installed versions."
         (user-error "Not found %s" cell))))
 
 ;; nvm end
+(defun npmjs-get-npm-version ()
+  "Return cons with description and parsed npm help output."
+  (npmjs-nvm-with-current-node-version
+   (string-trim (shell-command-to-string "npm -v"))))
 
 (defun npmjs-online-p ()
   "Check internet connection and return non-nil if so."
@@ -822,7 +828,26 @@ SCRIPT should be a symbol."
   (alist-get script
              (npmjs-get-package-json-scripts)))
 
-(defun npmjs-find-exec-nodejs (program)
+(defun npmjs-find-exec-nodejs ()
+  "Return absolute filename to node.js.
+The version is specified in the local variable `npmjs--current-node-version'."
+  (seq-find (lambda (it)
+              (and (string-match-p "/node/" it)
+                   (string-match-p "/bin/" it)))
+            (or (npmjs-nvm-with-current-node-version
+                 (parse-colon-path (getenv "PATH")))
+                (executable-find "node"))))
+
+(defun npmjs-find-npm-exec ()
+  "Find executable PROGRAM in current node version."
+  (seq-find (lambda (it)
+              (and (string-match-p "/node/" it)
+                   (string-match-p "/bin/" it)))
+            (or (npmjs-nvm-with-current-node-version
+                 (parse-colon-path (getenv "PATH")))
+                (executable-find "npm"))))
+
+(defun npmjs-find-exec-nodejs-program (program)
   "Find executable PROGRAM in current node version."
   (expand-file-name program
                     (seq-find (lambda (it)
@@ -832,17 +857,29 @@ SCRIPT should be a symbol."
                                    (parse-colon-path (getenv "PATH")))
                                   (executable-find "node")))))
 
+(defmacro npmjs-with-temp-buffer (&rest body)
+  "Evaluate BODY in a temporary buffer with current npm environment."
+  (let ((version (make-symbol "version")))
+    `(npmjs-nvm-with-current-node-version
+      (let ((,version npmjs--current-node-version))
+        (with-temp-buffer
+          (npmjs-nvm-with-env-vars
+            (setq npmjs--current-node-version
+                  ,version)
+            (parse-colon-path (getenv "PATH"))
+            ,@body))))))
+
 (defun npmjs-call-process (command &rest args)
   "Execute COMMAND with ARGS synchronously.
 
 Return stdout output if command existed with zero status, nil otherwise."
-  (with-temp-buffer
-    (let ((status (apply #'call-process command nil t nil
-                         (flatten-list args))))
-      (let ((result (string-trim (buffer-string))))
-        (if (zerop status)
-            result
-          (npmjs-message result) nil)))))
+  (npmjs-with-temp-buffer
+   (let ((status (apply #'call-process command nil t nil
+                        (flatten-list args))))
+     (let ((result (string-trim (buffer-string))))
+       (if (zerop status)
+           result
+         (npmjs-message result) nil)))))
 
 (defun npmjs-exec-in-dir (command &optional directory callback)
   "Execute COMMAND in PROJECT-DIR.
@@ -1132,6 +1169,18 @@ With a prefix ARG, allow editing."
   "Return name from current project package.json."
   (alist-get 'name (npmjs-get-package-json-alist)))
 
+(defun npmjs-project-display-name ()
+  "Return project name either from package.json or using it's directory."
+  (let* ((package-json (npmjs-get-package-json-alist))
+         (name (cdr (assoc 'name package-json)))
+         (version (cdr
+                   (assoc 'version package-json))))
+    (cond ((and name version)
+           (format "%s@%s" name version))
+          (name name)
+          ((setq name (npmjs-get-project-root))
+           (file-name-nondirectory (directory-file-name name))))))
+
 (defun npmjs--get-global-buffer-name ()
   "Get a create a suitable compilation buffer."
   (format "npmjs<global><%s>" npmjs--current-node-version))
@@ -1186,12 +1235,14 @@ Also show message when STATE changed."
       (define-key map key #'npmjs-search-throw-done))
     map))
 
+;;;###autoload
 (defun npmjs-search-throw-done ()
   "Throw done with `ivy-text'."
   (interactive)
   (when (boundp 'ivy-text)
     (npmjs-throw-done ivy-text)))
 
+;;;###autoload
 (defun npmjs-ivy-throw-done ()
   "Throw either current ivy candidate or text."
   (interactive)
@@ -1215,6 +1266,7 @@ Also show message when STATE changed."
     (npmjs-dependencies-get-ivy-map)
     (current-local-map))))
 
+;;;###autoload
 (defun npmjs-ivy-read-npm-dependency (&optional prompt initial-input history)
   "Call the npm search shell command with PROMPT, INITIAL-INPUT, and HISTORY.
 INITIAL-INPUT can be given as the initial minibuffer input."
@@ -1276,70 +1328,6 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
          (npmjs-ivy-read-npm-dependency prompt initial-input history))
         (t (npmjs-search-package))))
 
-;; ;;;###autoload
-;; (defun npmjs-read-npm-dependency (&optional prompt initial-input history)
-;;   "Call the npm search shell command with PROMPT, INITIAL-INPUT, and HISTORY.
-;; INITIAL-INPUT can be given as the initial minibuffer input."
-;;   (interactive)
-;;   (if (progn
-;;         (require 'ivy nil t)
-;;         (require 'counsel nil t)
-;;         (and (fboundp 'ivy-more-chars)
-;;              (fboundp 'counsel--async-command)
-;;              (fboundp 'ivy-read)
-;;              (fboundp 'counsel-delete-process)))
-;;       (let* ((dependencies)
-;;              (choice
-;;               (unwind-protect
-;;                   (progn
-;;                     (add-hook 'minibuffer-setup-hook 'npmjs-ivy-minibuffer-setup
-;;                               t)
-;;                     (ivy-read
-;;                      (or prompt
-;;                          "Repo:\s")
-;;                      (lambda (str)
-;;                        (or
-;;                         (ivy-more-chars)
-;;                         (progn
-;;                           (counsel--async-command
-;;                            (concat
-;;                             "npm search --prefer-offline --no-color --parseable "
-;;                             str))
-;;                           '("" "working..."))))
-;;                      :initial-input
-;;                      (when initial-input
-;;                        (string-join (split-string initial-input "[\s\t,]+" t)
-;;                                     ","))
-;;                      :dynamic-collection t
-;;                      :history (or
-;;                                history
-;;                                'npmjs-history-dependencies)
-;;                      :multi-action
-;;                      (lambda (marked)
-;;                        (setq dependencies
-;;                              (append marked dependencies)))
-;;                      :action (lambda (d) d)
-;;                      :unwind #'counsel-delete-process
-;;                      :caller 'npmjs-ivy-read-npm-dependency))
-;;                 (remove-hook 'minibuffer-setup-hook 'npmjs-ivy-minibuffer-setup)))
-;;              (single-cand (if (stringp choice)
-;;                               (car (split-string choice nil t))
-;;                             choice))
-;;              (result
-;;               (cond (dependencies
-;;                      (mapcar (lambda (d)
-;;                                (if (stringp d)
-;;                                    (car (split-string d nil))
-;;                                  d))
-;;                              dependencies))
-;;                     (t (list single-cand)))))
-;;         (car result))
-;;     (car
-;;      (let ((pkg (npmjs-search-package)))
-;;        (if (stringp pkg)
-;;            (list pkg)
-;;          pkg)))))
-
 (defvar npmjs-bmenu-search-buff-name "*npm search*")
 (defvar npmjs-bmenu-search-output nil)
 
@@ -1396,8 +1384,6 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
                                    tabulated-list-entries))
   (tabulated-list-print t)
   (npmjs-search-highlight-current))
-
-(declare-function json-read-from-string  "json")
 
 (defun npmjs-search-package-by-regexp (regexp &optional args)
   "Perfoms npm search with REGEXP and ARGS."
@@ -1649,24 +1635,23 @@ represent a JSON false value.  It defaults to `:false'."
                            (_ 'array))
                          :null-object (or null-object :null)
                          :false-object (or false-object :false))
-    (when (progn
-            (require 'json nil t)
-            (fboundp 'json-read-from-string))
-      (let ((json-object-type (or object-type 'alist))
-            (json-array-type
-             (pcase array-type
-               ('list 'list)
-               ('array 'vector)
-               (_ 'vector)))
-            (json-null (or null-object :null))
-            (json-false (or false-object :false)))
-        (json-read-from-string str)))) )
+    (require 'json)
+    (let ((json-object-type (or object-type 'alist))
+          (json-array-type
+           (pcase array-type
+             ('list 'list)
+             ('array 'vector)
+             (_ 'vector)))
+          (json-null (or null-object :null))
+          (json-false (or false-object :false)))
+      (json-read-from-string str))))
 
 (defun npmjs-parse-json-from-output (cmd &rest args)
   "Execute CMD with ARGS synchronously and parse json output."
   (npmjs-nvm-with-current-node-version
    (with-temp-buffer
-     (if (zerop (apply #'call-process (npmjs-find-exec-nodejs cmd) nil t nil
+     (if (zerop (apply #'call-process (npmjs-find-exec-nodejs-program cmd) nil t
+                       nil
                        (flatten-list args)))
          ;; npm output often contains warnings even with --json flag
          ;; so we need to cut json slice
@@ -2856,18 +2841,36 @@ PROMPT INITIAL-INPUT HISTORY is the same as for completing read."
                                                  (npmjs-get-npm-config))))))
                    nil nil initial-input hist))
 
+
+(defun npmjs-file-name-relative (filename)
+  "Convert FILENAME to be relative to project root or default directory."
+  (if-let ((proj-root (npmjs-get-project-root)))
+      (file-relative-name filename proj-root)
+    (file-relative-name filename default-directory)))
+
+(defun npmjs-read-pkg-directory (&optional prompt &rest _)
+  "Read file with .tar, .tar.gz, or .tgz extension.
+If PROMPT is non nil, use this prompt."
+  (npmjs-file-name-relative
+   (file-local-name
+    (read-directory-name (or prompt "Directory file: ")))))
+
 (defun npmjs-read-tar-file (&optional prompt &rest _)
   "Read file with .tar, .tar.gz, or .tgz extension.
 If PROMPT is non nil, use this prompt."
-  (read-file-name (or prompt "Tarball file: ")
-                  nil
-                  nil
-                  nil
-                  nil
-                  (npmjs--or file-directory-p
-                             (npmjs--compose
-                               (npmjs--rpartial member '("tar" "gz" "tgz"))
-                               file-name-extension))))
+  (npmjs-file-name-relative
+   (file-local-name
+    (read-file-name (or prompt "Tarball file: ")
+                    nil
+                    nil
+                    nil
+                    nil
+                    (npmjs--or file-directory-p
+                               (npmjs--compose
+                                 (npmjs--rpartial member '("tar"
+                                                           "gz"
+                                                           "tgz"))
+                                 file-name-extension))))))
 
 (defun npmjs-get-scope-matches (str)
   "Return scopes from STR."
@@ -2994,7 +2997,7 @@ If MULTI-VALUE is non it return multi reader."
                                                   (apply-partially
                                                    #'string-suffix-p "'"))
                                       identity]
-                                     [t (apply-partially 'format "'%s'")])
+                                     [t (apply-partially #'format "'%s'")])
                                    (apply-partially #'read-string)) nil nil
                                    multi-value))
     ((or "<folder>")
@@ -4279,7 +4282,7 @@ USED-KEYS is a list of keys that shouldn't be used."
                              t))
 
 (transient-define-argument npmjs-install-pkg-tag-argument ()
-  "Argument for packages without version and tags."
+  "Argument for packages with tag."
   :class 'transient-option
   :multi-value 'repeat
   :argument "<pkg>@<tag>"
@@ -4287,12 +4290,53 @@ USED-KEYS is a list of keys that shouldn't be used."
   :reader (npmjs-make-npm-package-reader-with-tag t))
 
 (transient-define-argument npmjs-install-pkg-version-argument ()
-  "Argument for packages without version and tags."
+  "Argument for packages with version and tags."
   :class 'transient-option
   :multi-value 'repeat
   :argument "<pkg>@<version>"
   :prompt "Package name:"
   :reader (npmjs-make-npm-package-reader-with-version t))
+
+(transient-define-argument npmjs-install-pkg-tarbal-argument ()
+  "Argument for installing tarbal file."
+  :class 'transient-option
+  :argument "<tarball>"
+  :prompt "Tarball file:"
+  :reader #'npmjs-read-tar-file)
+
+(transient-define-argument npmjs-install-pkg-directory ()
+  "Argument for installing tarbal file."
+  :class 'transient-option
+  :argument "<directory>"
+  :prompt "Directory:"
+  :reader #'transient-read-existing-directory)
+
+
+;;;###autoload
+(defun npmjs-install-self-globally ()
+  "Install current project as global dependency."
+  (interactive)
+  (when-let ((proj (npmjs-get-project-root)))
+    (npmjs-nvm-with-current-node-version
+     (let ((default-directory (expand-file-name proj)))
+       (npmjs-run-as-comint "npm install . --global")))))
+
+;;;###autoload
+(defun npmjs-install-project-dependencies ()
+  "Install current project as global dependency."
+  (interactive)
+  (when-let ((proj (npmjs-get-project-root)))
+    (npmjs-nvm-with-current-node-version
+     (let ((default-directory (expand-file-name proj)))
+       (npmjs-run-as-comint (concat
+                             "npm install"
+                             (npmjs-format-args
+                              (remove "--global"
+                                      (seq-filter
+                                       (npmjs--and #'stringp (apply-partially
+                                                              #'string-prefix-p
+                                                              "-"))
+                                       (npmjs-get-arguments))))))))))
 
 ;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
 (transient-define-prefix npmjs-install ()
@@ -4311,7 +4355,9 @@ USED-KEYS is a list of keys that shouldn't be used."
                        transient--prefix)
       '(("p" "package" npmjs-install-pkg-argument)
         ("@t" "package@tag" npmjs-install-pkg-tag-argument)
-        ("@v" "package@version" npmjs-install-pkg-version-argument))))]
+        ("@v" "package@version" npmjs-install-pkg-version-argument)
+        ("-d" "directory" npmjs-install-pkg-directory)
+        ("-t" "Install tarball file" npmjs-install-pkg-tarbal-argument))))]
   ["Options"
    :setup-children
    (lambda (&rest _argsn)
@@ -4334,9 +4380,9 @@ USED-KEYS is a list of keys that shouldn't be used."
                             [listp
                              (apply-partially #'seq-find
                                               (npmjs--or
-                                               (apply-partially 'string=
+                                               (apply-partially #'string=
                                                                 "--global")
-                                               (apply-partially 'string= "-")))])
+                                               (apply-partially #'string= "-")))])
                           (apply-partially #'npmjs-nth 2))
                         (npmjs-add-options-shortcuts
                          (plist-get props
@@ -4348,6 +4394,17 @@ USED-KEYS is a list of keys that shouldn't be used."
                           transient--prefix)
          options))))]
   ["Actions"
+   ("." npmjs-install-self-globally
+    :description (lambda ()
+                   (format
+                    "current project (%s) as global package"
+                    (or
+                     (alist-get
+                      'name
+                      (npmjs-get-package-json-alist))
+                     "no project")))
+    :inapt-if-not (lambda ()
+                    (alist-get 'name (npmjs-get-package-json-alist))))
    ("RET" "Run" npmjs-done)
    ("C-c C-a" "Show arguments" npmjs-show-args)]
   (interactive)
@@ -4356,6 +4413,53 @@ USED-KEYS is a list of keys that shouldn't be used."
 (put 'npmjs-install 'npm-description "Install packages")
 (put 'npmjs-install 'npm-command "install")
 
+;;;###autoload
+(defun npmjs-show-package-json-man-page ()
+  "Show man page about package.json handling."
+  (interactive)
+  (npmjs-show-manual "package-json"))
+
+;;;###autoload
+(defun npmjs-show-scripts-man-page ()
+  "Show man page about npm scripts."
+  (interactive)
+  (npmjs-show-manual "scripts"))
+
+(defun npmjs-get-scripts-suffixes ()
+  "Return group specification with scripts for current project.
+It is a suffixes in the same forms as expected by `transient-define-prefix'."
+  (let ((scripts (npmjs-stringify (npmjs-get-package-json-scripts)))
+        (proj-name (npmjs-project-display-name))
+        (dir (npmjs-get-project-default-directory)))
+    (npmjs-key-builder-generate-shortcuts
+     scripts
+     #'car
+     (lambda (key value)
+       (let ((descr (cdr value))
+             (script (car value))
+             (name (npmjs-make-symbol "npm-run" proj-name (car value))))
+         (fset name
+               `(lambda ()
+                  ,(format "Run script %s in %s." script dir)
+                  (interactive)
+                  (let ((default-directory ,dir))
+                    (npmjs-confirm-and-run
+                     "npm"
+                     "run-script"
+                     ,script
+                     (npmjs-get-formatted-transient-args)))))
+         (list key name :description `(lambda ()
+                                        (concat
+                                         ,script
+                                         " "
+                                         "("
+                                         (propertize
+                                          ,descr
+                                          'face
+                                          'transient-value)
+                                         ")"))))))))
+
+
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
   "Run arbitrary package scripts."
@@ -4363,62 +4467,14 @@ USED-KEYS is a list of keys that shouldn't be used."
                (npmjs-show-manual "npm-run-script"))
   [:description
    (lambda ()
-     (if-let* ((package-json-path
-                (npmjs-get-package-json-path))
-               (package-json
-                (npmjs-read-json
-                 package-json-path
-                 'alist)))
-         (format "Run script from %s" (or
-                                       (alist-get 'name package-json)
-                                       package-json-path))
-       "Not in project"))
+     (if-let ((name (npmjs-project-display-name)))
+         (format "Run script (%s)" name)
+       "Run script"))
    :setup-children
    (lambda (&rest _args)
-     (when-let* ((package-json-path
-                  (npmjs-get-package-json-path))
-                 (package-json
-                  (npmjs-read-json
-                   package-json-path
-                   'alist))
-                 (scripts (mapcar (lambda (it)
-                                    (cons (symbol-name (car it))
-                                          (cdr it)))
-                                  (alist-get
-                                   'scripts
-                                   package-json))))
-       (let* ((children
-               (npmjs-key-builder-generate-shortcuts
-                scripts
-                #'car
-                (lambda (key value)
-                  (let ((descr (cdr value))
-                        (script (car value))
-                        (name (npmjs-make-symbol (car value))))
-                    (fset name
-                          `(lambda ()
-                             (interactive)
-                             (npmjs-confirm-and-run
-                              "npm"
-                              "run-script"
-                              ,script
-                              (npmjs-get-formatted-transient-args))))
-                    (list key
-                          name
-                          :description `(lambda ()
-                                          (concat
-                                           ,script
-                                           " "
-                                           "("
-                                           (propertize
-                                            ,descr
-                                            'face
-                                            'transient-value)
-                                           ")"))))))))
-         (mapcar
-          (apply-partially #'transient-parse-suffix
-                           transient--prefix)
-          children))))]
+     (mapcar
+      (apply-partially #'transient-parse-suffix transient--prefix)
+      (npmjs-get-scripts-suffixes)))]
   ["Options"
    :setup-children
    (lambda (&rest _args)
@@ -4437,6 +4493,9 @@ USED-KEYS is a list of keys that shouldn't be used."
          (apply-partially #'transient-parse-suffix
                           transient--prefix)
          children))))]
+  ["Help"
+   ("-s" "scripts" npmjs-show-scripts-man-page)
+   ("-p" "package.json" npmjs-show-package-json-man-page)]
   (interactive)
   (transient-setup #'npmjs-run-script))
 
@@ -4492,6 +4551,17 @@ USED-KEYS is a list of keys that shouldn't be used."
                    npmjs-current-descriptions-alist)
              npmjs-descriptions-alist)))
     npm-version))
+
+(defmacro npmjs-csetq (variable value)
+  "Set the value of VARIABLE to VALUE using the appropriate set function."
+  `(funcall (or (get ',variable 'custom-set) 'set-default) ',variable ,value))
+
+;;;###autoload
+(defun npmjs-toggle-prefix-evaluation ()
+  "Toggle the value of variable `npmjs-inhibit-prefix-cache'."
+  (interactive)
+  (npmjs-csetq npmjs-inhibit-prefix-cache (not npmjs-inhibit-prefix-cache))
+  (npmjs-message "%s %s" 'npmjs-inhibit-prefix-cache npmjs-inhibit-prefix-cache))
 
 ;;;###autoload
 (defun npmjs ()
