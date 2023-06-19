@@ -502,8 +502,7 @@ and (if supplied, minor) match."
                   requested
                   (npmjs-nvm--version-from-string (car version))))
                versions)))
-         (if (eq possible-versions nil)
-             nil
+         (when possible-versions
            (car (sort possible-versions
                       (lambda (a b)
                         (not (npmjs-nvm-version-compare
@@ -924,7 +923,7 @@ Invoke CALLBACK without args."
                    (funcall callback output))
                  (when (bufferp (process-buffer process))
                    (kill-buffer (process-buffer process))))
-             (user-error (format "%s\n%s" command output))))))
+             (user-error "%s\n%s" command output)))))
       (require 'comint)
       (when (fboundp 'comint-output-filter)
         (set-process-filter proc #'comint-output-filter)))))
@@ -1565,7 +1564,7 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
             (lambda ()
               (when (minibufferp)
                 (setq timer (run-with-idle-timer
-                             0.2 'repeat
+                             0.2 #'repeat
                              #'npmjs-search-package-fn
                              args
                              (current-buffer)))))
@@ -2118,14 +2117,14 @@ By default FN is man."
                    (funcall finalize (mapconcat
                                       (apply-partially
                                        #'npmjs-key-builder-safe-substring n)
-                                      parts)))
+                                      parts "")))
                  (number-sequence 1 (min len parts-len)))
                 (mapcar
                  (lambda (n)
                    (funcall finalize (mapconcat
                                       (apply-partially
                                        #'npmjs-key-builder-safe-substring n)
-                                      (reverse parts))))
+                                      (reverse parts) "")))
                  (number-sequence 1 (min len parts-len))))))))
 
 (defun npmjs-key-builder--generate-shortcuts (items &optional key-fn value-fn
@@ -2357,21 +2356,20 @@ Default value for HEIGHT is `max-mini-window-height',
 and for WIN-WIDTH - window width."
   (let* ((descriptions
           (sort
-           (mapcar #'(lambda
-                       (&rest args)
-                       (length
-                        (apply
-                         #'(lambda
-                             (&rest args)
-                             (apply #'concat
-                                    (list
-                                     (apply
-                                      #'npmjs-key-builder-take-key
-                                      args)
-                                     (apply
-                                      #'npmjs-key-builder-take-description
-                                      args))))
-                         args)))
+           (mapcar (lambda (&rest args)
+                     (length
+                      (apply
+                       (lambda
+                         (&rest args)
+                         (apply #'concat
+                                (list
+                                 (apply
+                                  #'npmjs-key-builder-take-key
+                                  args)
+                                 (apply
+                                  #'npmjs-key-builder-take-description
+                                  args))))
+                       args)))
                    arguments)
            #'>))
          (longest (+ 10 (car descriptions)))
@@ -4237,12 +4235,12 @@ COMMANDS is a nested list of property lists with such props:
                  (npmjs-make-symbol cmd))
                 (key (plist-get commands :key)))
            (put name 'npm-command cmd)
-           (fset name
-                 `(lambda ()
-                    (interactive)
-                    (npmjs-confirm-and-run
-                     "npm"
-                     ,cmd)))
+           (funcall #'fset name
+                    `(lambda ()
+                       (interactive)
+                       (npmjs-confirm-and-run
+                        "npm"
+                        ,cmd)))
            (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
                (append (list key cmd name) props)
              (list key cmd name))))
@@ -4438,16 +4436,16 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
        (let ((descr (cdr value))
              (script (car value))
              (name (npmjs-make-symbol "npm-run" proj-name (car value))))
-         (fset name
-               `(lambda ()
-                  ,(format "Run script %s in %s." script dir)
-                  (interactive)
-                  (let ((default-directory ,dir))
-                    (npmjs-confirm-and-run
-                     "npm"
-                     "run-script"
-                     ,script
-                     (npmjs-get-formatted-transient-args)))))
+         (funcall #'fset name
+                  `(lambda ()
+                     ,(format "Run script %s in %s." script dir)
+                     (interactive)
+                     (let ((default-directory ,dir))
+                       (npmjs-confirm-and-run
+                        "npm"
+                        "run-script"
+                        ,script
+                        (npmjs-get-formatted-transient-args)))))
          (list key name :description `(lambda ()
                                         (concat
                                          ,script
