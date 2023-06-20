@@ -2556,43 +2556,46 @@ as those for `completing-read'."
     (setq done
           (catch 'done
             (while (setq curr
-                         (let ((ch (minibuffer-with-setup-hook
-                                       (lambda ()
-                                         (use-local-map
-                                          (make-composed-keymap
-                                           npmjs-multi-completion-map
-                                           (current-local-map))))
-                                     (completing-read
-                                      (concat (string-trim (or prompt
-                                                               "Item"))
-                                              "\s"
-                                              (substitute-command-keys
-                                               "(`\\<npmjs-multi-completion-map>\
+                         (let ((ch
+                                (minibuffer-with-setup-hook
+                                    (lambda ()
+                                      (use-local-map
+                                       (make-composed-keymap
+                                        npmjs-multi-completion-map
+                                        (current-local-map))))
+                                  (completing-read
+                                   (concat (string-trim (or prompt
+                                                            "Item"))
+                                           "\s"
+                                           (substitute-command-keys
+                                            "(`\\<npmjs-multi-completion-map>\
 \\[npmjs-throw-done]' to finish)\s")
-                                              (if choices
-                                                  (concat
-                                                   "("
-                                                   (string-join
-                                                    choices
-                                                    ", ")
-                                                   ")")
-                                                ""))
-                                      (or table-completion
-                                          (lambda (&optional str pred
-                                                             action)
-                                            (if (eq action 'metadata)
-                                                `(metadata
-                                                  (annotation-function . ,
-                                                                       annotate-fn))
-                                              (complete-with-action action
-                                                                    alist
-                                                                    str
-                                                                    pred))))
-                                      (lambda (it)
-                                        (if (consp it)
-                                            (not (member (car it) choices))
-                                          (not (member it choices))))
-                                      nil initial-input hist))))
+                                           (if choices
+                                               (concat
+                                                "("
+                                                (string-join
+                                                 choices
+                                                 ", ")
+                                                ")")
+                                             ""))
+                                   (or
+                                    table-completion
+                                    (lambda (str pred action)
+                                      (if
+                                          (eq action 'metadata)
+                                          `(metadata
+                                            (annotation-function .
+                                                                 ,annotate-fn))
+                                        (complete-with-action
+                                         action
+                                         alist
+                                         str
+                                         pred))))
+                                   (lambda (it)
+                                     (if (consp it)
+                                         (not (member (car it) choices))
+                                       (not (member it choices))))
+                                   nil initial-input hist))))
                            (if (string-empty-p (string-trim ch))
                                (npmjs-throw-done)
                              ch)))
@@ -2795,16 +2798,17 @@ HISTORY, if non-nil, specifies a history list and optionally the initial
   (let* ((config (mapcar
                   (npmjs--converge cons
                                    [(npmjs--compose
-                                      substring-no-properties
-                                      (npmjs--cond
-                                        [numberp number-to-string]
-                                        [symbolp symbol-name]
-                                        [t identity])
-                                      car)
+                                     substring-no-properties
+                                     (npmjs--cond
+                                      [numberp number-to-string]
+                                      [symbolp symbol-name]
+                                      [t identity])
+                                     car)
                                     cdr])
                   (or config (npmjs-get-npm-config))))
          (annotate-fn (lambda (str)
-                        (format " %s" (or (cdr (assoc-string str config)) "")))))
+                        (format " %s" (or (cdr (assoc-string str config))
+                                          "")))))
     (lambda (str pred action)
       (if (eq action 'metadata)
           `(metadata
@@ -4373,15 +4377,16 @@ USED-KEYS is a list of keys that shouldn't be used."
              (options (append
                        (seq-remove
                         (npmjs--compose
-                          (npmjs--cond
-                            [stringp (apply-partially #'string= "--global")]
-                            [listp
-                             (apply-partially #'seq-find
-                                              (npmjs--or
-                                               (apply-partially #'string=
-                                                                "--global")
-                                               (apply-partially #'string= "-")))])
-                          (apply-partially #'npmjs-nth 2))
+                         (npmjs--cond
+                          [stringp (apply-partially #'string= "--global")]
+                          [listp
+                           (apply-partially
+                            #'seq-find
+                            (npmjs--or
+                             (apply-partially #'string=
+                                              "--global")
+                             (apply-partially #'string= "-")))])
+                         (apply-partially #'npmjs-nth 2))
                         (npmjs-add-options-shortcuts
                          (plist-get props
                                     :options)
@@ -4559,7 +4564,8 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
   "Toggle the value of variable `npmjs-inhibit-prefix-cache'."
   (interactive)
   (npmjs-csetq npmjs-inhibit-prefix-cache (not npmjs-inhibit-prefix-cache))
-  (npmjs-message "%s %s" 'npmjs-inhibit-prefix-cache npmjs-inhibit-prefix-cache))
+  (npmjs-message "%s %s" 'npmjs-inhibit-prefix-cache
+                 npmjs-inhibit-prefix-cache))
 
 ;;;###autoload
 (defun npmjs ()
