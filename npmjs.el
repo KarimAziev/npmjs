@@ -171,6 +171,14 @@ Otherwise, return it as is."
              functions
              `(apply ,@(npmjs--expand init-fn) ,args-var)))))))
 
+(defmacro npmjs--const (value)
+  "Return a function that always returns VALUE.
+This function accepts any number of arguments but ignores them."
+  (declare (pure t)
+           (side-effect-free error-free))
+  (let ((arg (make-symbol "_")))
+    `(lambda (&rest ,arg) ,value)))
+
 (defmacro npmjs--cond (&rest pairs)
   "Return a function that expands a list of PAIRS to `cond' clauses.
 Every pair should be either:
@@ -2449,9 +2457,41 @@ By default ARG is t."
      (substring-no-properties (symbol-name item)))
     (_ item)))
 
+(defun npmjs-make-alist-annotated-completion-table (collection)
+  "Return completion table with annotations for alist COLLECTION."
+  (let* ((alist (npmjs-stringify collection))
+         (longest (+ 5
+                     (apply #'max (mapcar
+                                   (npmjs--compose
+                                     (npmjs--cond
+                                       [stringp length]
+                                       [t (npmjs--const 0)])
+                                     car-safe)
+                                   alist))))
+         (fmt (concat (propertize " " 'display
+                                  `(space
+                                    :align-to
+                                    ,longest))
+                      " "))
+         (annotate-fn (lambda (k)
+                        (if-let ((cell (assoc-string k alist)))
+                            (if (stringp cell) ""
+                              (concat fmt (truncate-string-to-width
+                                           (format
+                                            "%s"
+                                            (cdr cell))
+                                           60
+                                           nil nil "...")))
+                          ""))))
+    (lambda (&optional str pred action)
+      (if (eq action 'metadata)
+          `(metadata
+            (annotation-function . ,annotate-fn))
+        (complete-with-action action alist str
+                              pred)))))
+
 (defun npmjs-single-completing-read-annotated (&optional prompt collection
-                                                         annot-value predicate
-                                                         require-match
+                                                         predicate require-match
                                                          initial-input hist def
                                                          inherit-input-method)
   "Read multiple strings in the minibuffer, with completion.
@@ -2459,78 +2499,29 @@ If ANNOT-VALUE is non nil, it will be called with value and should return
 string with annotation.
 PROMPT, COLLECTION, PREDICATE, REQUIRE-MATCH, INITIAL-INPUT, HIST, DEF,
 and INHERIT-INPUT-METHOD are the same as for `completing-read'."
-  (let* ((table-completion
-          (when (functionp collection)
-            collection))
-         (alist
-          (unless table-completion
-            (npmjs-stringify collection)))
-         (value-getter (if (stringp (car-safe alist))
-                           (lambda (it)
-                             (seq-find (apply-partially #'stringp it) alist))
-                         (lambda (it)
-                           (cdr (assoc-string it alist)))))
-         (annotate-fn
-          (lambda (k)
-            (concat
-             (if-let ((value
-                       (when value-getter
-                         (funcall value-getter k))))
-                 (if annot-value
-                     (funcall annot-value value)
-                   (format " %s" value))
-               "")))))
+  (let ((table-completion
+         (if (functionp collection)
+             collection
+           (npmjs-make-alist-annotated-completion-table collection))))
     (completing-read
      (concat (string-trim (or prompt "Item"))" \s")
-     (or table-completion
-         (lambda (&optional str pred action)
-           (if (eq action 'metadata)
-               `(metadata
-                 (annotation-function . ,annotate-fn))
-             (complete-with-action action alist str
-                                   pred))))
+     table-completion
      predicate
      require-match
      initial-input hist def inherit-input-method)))
 
 (defun npmjs-multi-completing-read-annotated (&optional prompt collection
-                                                        annot-value
                                                         initial-input hist)
   "Read multiple strings in the minibuffer, with completion.
-If ANNOT-VALUE is non nil, it will be called with value and should return
-string with annotation.
 PROMPT, INITIAL-INPUT, HIST and COLLECTION are the same arguments
 as those for `completing-read'."
-  (let* ((table-completion
-          (when (functionp collection)
-            collection))
-         (alist
-          (unless table-completion
-            (npmjs-stringify collection)))
-         (value-getter
-          (cond (table-completion nil)
-                ((and (stringp (car-safe alist))
-                      annot-value)
-                 (lambda (it)
-                   (seq-find
-                    (apply-partially #'stringp
-                                     it)
-                    alist)))
-                (t (lambda (it)
-                     (cdr (assoc-string it alist))))))
-         (annotate-fn
-          (lambda (k)
-            (concat
-             (if-let ((value
-                       (when value-getter
-                         (funcall k value-getter))))
-                 (if annot-value
-                     (funcall annot-value value)
-                   (format " %s" value))
-               ""))))
-         (choices)
-         (curr)
-         (done))
+  (let ((table-completion
+         (if (functionp collection)
+             collection
+           (npmjs-make-alist-annotated-completion-table collection)))
+        (choices)
+        (curr)
+        (done))
     (setq done
           (catch 'done
             (while (setq curr
@@ -2556,19 +2547,7 @@ as those for `completing-read'."
                                                  ", ")
                                                 ")")
                                              ""))
-                                   (or
-                                    table-completion
-                                    (lambda (str pred action)
-                                      (if
-                                          (eq action 'metadata)
-                                          `(metadata
-                                            (annotation-function .
-                                                                 ,annotate-fn))
-                                        (complete-with-action
-                                         action
-                                         alist
-                                         str
-                                         pred))))
+                                   table-completion
                                    (lambda (it)
                                      (if (consp it)
                                          (not (member (car it) choices))
@@ -2654,58 +2633,41 @@ It also temporarily setup extra keymap `npmjs-multi-completion-map'."
         (append choices (list done))
       choices)))
 
-(defun npmjs-make-reader (fn &optional collection annot-value multi)
+(defun npmjs-make-reader (fn &optional collection multi)
   "Create minibuffer reader from FN with PROMPT INITIAL-INPUT HISTORY.
-If ANNOT-VALUE is non nil, it will be called with value and should return
-string with annotation.
-COLLECTION should be either function that returns collection
-for `completing-read' or list of choices.
-If MULTI is non nil, create FN with `npmjs-multi-reader', othervise just return
-FN."
+If FN is non-nil, COLLECTION is ignored.
+If FN is nil, COLLECTION should be either function that will be called without
+arguments and should return completion table, or a list of choices.
+If MULTI is non nil, allow multiple completions."
   (cond ((and fn multi)
          (apply-partially #'npmjs-multi-reader fn))
         ((and fn (not multi))
          (apply-partially #'npmjs-single-reader fn))
-        ((and collection)
-         (npmjs-make-completing-read-reader collection annot-value multi))
+        ((and collection multi)
+         (lambda (&optional prompt initial-input hist)
+           (npmjs-multi-completing-read-annotated prompt
+                                                  (if (functionp collection)
+                                                      (funcall collection)
+                                                    collection)
+                                                  initial-input
+                                                  hist)))
+        ((and collection (not multi))
+         (lambda (&optional prompt initial-input hist)
+           (npmjs-single-completing-read-annotated
+            prompt
+            (if (functionp collection)
+                (funcall collection)
+              collection)
+            initial-input hist)))
         (t fn)))
 
-(defun npmjs-make-completing-read-reader (&optional completion-table-creator
-                                                    annot-value multi-value)
-  "Create reader with `completing-read' using COMPLETION-TABLE-CREATOR.
-If ANNOT-VALUE is non nil, it will be called with value and should return
-string with annotation.
-COMPLETION-TABLE-CREATOR should be either function that returns collection
-for `completing-read' or list of choices.
-If MULTI-VALUE is non nil, allow multiple choices and return value is list,
-othervise string."
-  (if multi-value
-      (lambda (&optional prompt initial-input hist)
-        (npmjs-multi-completing-read-annotated prompt
-                                               (if (functionp
-                                                    completion-table-creator)
-                                                   (funcall
-                                                    completion-table-creator)
-                                                 completion-table-creator)
-                                               annot-value
-                                               initial-input hist))
-    (lambda (&optional prompt initial-input hist)
-      (npmjs-single-completing-read-annotated prompt
-                                              (if (functionp
-                                                   completion-table-creator)
-                                                  (funcall
-                                                   completion-table-creator)
-                                                completion-table-creator)
-                                              annot-value
-                                              nil nil initial-input hist))))
 
 (defun npmjs-make-combined-package-reader (reader transformer &optional
                                                   multi-value)
   "Create minibuffer READER with TRANSFORMER.
 If MULTI-VALUE is non nil, return list of packages, othervise string."
   (lambda (&optional prompt initial-input hist)
-    (let ((deps (funcall (npmjs-make-reader reader nil nil
-                                            multi-value)
+    (let ((deps (funcall (npmjs-make-reader reader nil multi-value)
                          prompt initial-input hist)))
       (if (stringp deps)
           (funcall transformer deps)
@@ -2740,10 +2702,9 @@ HIST, if non-nil, specifies a history list and optionally the initial
                                       car)
                                     cdr])
                   (npmjs-get-npm-config)))
-         (choice (completing-read (or prompt "Key: ")
-                                  (npmjs-npm-config-completion-table
-                                   config)
-                                  nil nil initial-input hist))
+         (choice (npmjs-single-completing-read-annotated (or prompt "Key: ")
+                                                         (npmjs-get-npm-config)
+                                                         nil nil initial-input hist))
          (cell (assoc-string choice config))
          (value (cdr-safe cell)))
     (format "%s=%s" choice
@@ -2863,27 +2824,26 @@ If PROMPT is non nil, use this prompt."
 
 (defun npmjs-guess-scopes ()
   "Return choices which looks like a scope."
-  (mapcar #'list
-          (seq-uniq
-           (flatten-list
-            (mapcar
-             (npmjs--compose
-               npmjs-get-scope-matches
-               substring-no-properties)
-             (seq-filter
-              (apply-partially #'string-match-p "^@[a-z-0-9]+")
-              (append
-               kill-ring
-               (remove nil
-                       (append
-                        (mapcar #'car
-                                (npmjs-pluck-depenencies
-                                 (npmjs-get-package-json-alist)))
-                        (mapcar
-                         (npmjs--compose
-                           symbol-name
-                           car)
-                         (npmjs-get-npm-config)))))))))))
+  (seq-uniq
+   (flatten-list
+    (mapcar
+     (npmjs--compose
+       npmjs-get-scope-matches
+       substring-no-properties)
+     (seq-filter
+      (apply-partially #'string-match-p "^@[a-z-0-9]+")
+      (append
+       kill-ring
+       (remove nil
+               (append
+                (mapcar #'car
+                        (npmjs-pluck-depenencies
+                         (npmjs-get-package-json-alist)))
+                (mapcar
+                 (npmjs--compose
+                   symbol-name
+                   car)
+                 (npmjs-get-npm-config))))))))))
 
 (defvar npmjs-all-known-hints nil)
 (defvar npmjs-all-args nil)
@@ -2899,22 +2859,17 @@ If MULTI-VALUE is non it return multi reader."
        ("run-script" (npmjs-make-reader
                       #'npmjs-read-script
                       nil
-                      nil
                       multi-value))))
     ((or "<registry>" "<url>")
      (npmjs-make-reader
-      #'npmjs-url-reader
-      nil
-      nil multi-value))
+      #'npmjs-url-reader nil multi-value))
     ((or "<@orgname>" "<@scope>" "<scope>")
-     (npmjs-make-reader nil
-                        #'npmjs-guess-scopes nil
-                        multi-value))
+     (npmjs-make-reader nil #'npmjs-guess-scopes multi-value))
     ("--registry="
      (npmjs-make-reader
       #'npmjs-url-reader
       nil
-      nil multi-value))
+      multi-value))
     ((or "<pkg>"
          "<package-spec>"
          "<@scope><package>"
@@ -2925,22 +2880,18 @@ If MULTI-VALUE is non it return multi reader."
        ((or "install"
             "unpublish"
             "view")
-        (npmjs-make-reader #'npmjs-read-new-dependency nil nil
-                           multi-value))
+        (npmjs-make-reader #'npmjs-read-new-dependency nil multi-value))
        ((or "update" "uninstall" "edit" "ls")
-        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
-                           multi-value))
+        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table multi-value))
        ("init" 'read-string)
-       (_ (npmjs-make-reader #'npmjs-read-new-dependency nil nil
-                             multi-value))))
+       (_ (npmjs-make-reader #'npmjs-read-new-dependency nil multi-value))))
     ((or "<@scope><pkg>@<tag>"
          "<pkg>@<tag>"
          "<package>@<tag>"
          "<name>@<tag>")
      (pcase cmd
        ((or "update" "uninstall" "edit" "ls")
-        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
-                           multi-value))
+        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table multi-value))
        ("init" 'read-string)
        (_ (npmjs-make-npm-package-reader-with-tag multi-value))))
     ((or "<@scope><name>@<version>"
@@ -2950,25 +2901,20 @@ If MULTI-VALUE is non it return multi reader."
          "<@scope><pkg>@<version range>")
      (pcase cmd
        ((or "update" "uninstall" "edit" "ls")
-        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table nil
-                           multi-value))
+        (npmjs-make-reader nil #'npmjs-pkg-get-dependencies-table multi-value))
        ("init" 'read-string)
        (_ (npmjs-make-npm-package-reader-with-version multi-value))))
     ("<key>"
      (pcase (car (split-string cmd " " t))
        ((or "get" "config" "set")
-        (npmjs-make-reader nil #'npmjs-npm-config-completion-table nil
-                           multi-value))))
+        (npmjs-make-reader nil #'npmjs-npm-config-completion-table multi-value))))
     ((or "<tarball>"
          "<tarball file>")
-     (npmjs-make-reader #'npmjs-read-tar-file nil nil
-                        multi-value))
+     (npmjs-make-reader #'npmjs-read-tar-file nil multi-value))
     ("<file>"
-     (npmjs-make-reader #'transient-read-file nil nil
-                        multi-value))
+     (npmjs-make-reader #'transient-read-file nil multi-value))
     ("<depth>"
-     (npmjs-make-reader #'transient-read-number-N0 nil nil
-                        multi-value))
+     (npmjs-make-reader #'transient-read-number-N0 nil multi-value))
     ("<call>" (npmjs-make-reader (npmjs--compose
                                    (npmjs--cond
                                      [string-empty-p identity]
@@ -2978,16 +2924,15 @@ If MULTI-VALUE is non it return multi reader."
                                                    #'string-suffix-p "'"))
                                       identity]
                                      [t (apply-partially #'format "'%s'")])
-                                   (apply-partially #'read-string)) nil nil
-                                   multi-value))
+                                   (apply-partially #'read-string))
+                                 nil multi-value))
     ((or "<folder>")
-     (npmjs-make-reader #'transient-read-existing-directory nil nil
-                        multi-value))
-    ("<key>=<value>"
+     (npmjs-make-reader #'transient-read-existing-directory nil multi-value))
+    ((or "<key>=<value>" "<key>=")
      (pcase (car (split-string cmd " " t))
        ((or "config" "set" "get")
         (npmjs-make-reader #'npmjs-npm-read-config-key-value nil
-                           nil multi-value))))))
+                           multi-value))))))
 
 (defun npmjs-parse-hint (str &optional cmd parsed-props)
   "Parse hint STR for CMD.
@@ -4259,8 +4204,7 @@ USED-KEYS is a list of keys that shouldn't be used."
   :multi-value 'repeat
   :argument "<pkg>"
   :prompt "Package name:"
-  :reader (npmjs-make-reader #'npmjs-read-new-dependency nil nil
-                             t))
+  :reader (npmjs-make-reader #'npmjs-read-new-dependency nil t))
 
 (transient-define-argument npmjs-install-pkg-tag-argument ()
   "Argument for packages with tag."
