@@ -1124,7 +1124,7 @@ With a prefix ARG, allow editing."
   (setq mode-name "NPMJS")
   (setq-local truncate-lines t)
   (add-hook 'compilation-filter-hook
-            'npmjs-compilation-filter-hook nil t))
+            #'npmjs-compilation-filter-hook nil t))
 
 ;;;###autoload
 (define-minor-mode npmjs-minor-mode
@@ -4386,6 +4386,8 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                                           'transient-value)
                                          ")"))))))))
 
+(defvar-local npmjs-current-scripts nil)
+
 
 ;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
 (transient-define-prefix npmjs-run-script ()
@@ -4401,7 +4403,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
    (lambda (&rest _args)
      (mapcar
       (apply-partially #'transient-parse-suffix transient--prefix)
-      (npmjs-get-scripts-suffixes)))]
+      npmjs-current-scripts))]
   ["Options"
    :setup-children
    (lambda (&rest _args)
@@ -4413,7 +4415,8 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                              (cdr
                               npmjs-current-descriptions-alist))))
              (options (npmjs-add-options-shortcuts
-                       (plist-get props :options)))
+                       (plist-get props :options)
+                       (mapcar #'car npmjs-current-scripts)))
              (children (append options
                                npmjs-options-suffixes)))
         (mapcar
@@ -4424,6 +4427,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
    ("-s" "scripts" npmjs-show-scripts-man-page)
    ("-p" "package.json" npmjs-show-package-json-man-page)]
   (interactive)
+  (setq npmjs-current-scripts (npmjs-get-scripts-suffixes))
   (transient-setup #'npmjs-run-script))
 
 (put 'npmjs-run-script 'npm-description "Install packages")
