@@ -2846,9 +2846,11 @@ HIST, if non-nil, specifies a history list and optionally the initial
                                       car)
                                     cdr])
                   (npmjs-get-npm-config)))
-         (choice (npmjs-single-completing-read-annotated (or prompt "Key: ")
-                                                         (npmjs-get-npm-config)
-                                                         nil nil initial-input hist))
+         (choice (npmjs-single-completing-read-annotated
+                  (or prompt "Key: ")
+                  (npmjs-get-npm-config)
+                  nil nil initial-input
+                  hist))
          (cell (assoc-string choice config))
          (value (cdr-safe cell)))
     (format "%s=%s" choice
@@ -3051,7 +3053,8 @@ If MULTI-VALUE is non it return multi reader."
     ("<key>"
      (pcase (car (split-string cmd " " t))
        ((or "get" "config" "set")
-        (npmjs-make-reader nil #'npmjs-npm-config-completion-table multi-value))))
+        (npmjs-make-reader nil
+                           #'npmjs-npm-config-completion-table multi-value))))
     ((or "<tarball>"
          "<tarball file>")
      (npmjs-make-reader #'npmjs-read-tar-file nil multi-value))
@@ -3937,7 +3940,12 @@ If INHIBIT-EVAL is nil, don't eval infixes."
 
 
 (defun npmjs-map-command-cell-lines (cell &optional inhibit-eval)
-  "Parse CELL with command and description lines to options.
+  "Process the cons CELL containing a command and associated descriptions lines.
+
+It extracts information such as subcommands, common options, aliases, and
+descriptions from the lines and returns a plist representing the command's
+documentation.
+
 If INHIBIT-EVAL is nil, don't eval infixes."
   (let ((cmd (car cell))
         (lines (cdr cell))
@@ -4168,7 +4176,19 @@ NO-EVAL is used for debug purposes."
 
 ;;;###autoload
 (defun npmjs-eval-prefix (name body)
-  "Eval and call transient prefix with NAME and BODY."
+  "Eval and call transient prefix with NAME and BODY.
+
+NAME is the name of the prefix command to define. It should be a symbol.
+
+BODY is a list of arguments for `transient-define-prefix'.
+
+It set the default value of the command's arguments using a lambda function.
+If `npmjs-get-project-root' returns nil, it sets the default value to
+--global argument.
+
+It also sets a help function for the prefix command. The help function
+calls `npmjs-show-manual' with the value of the command's
+`man-page' property retrieved from NAME."
   (interactive)
   (eval `(progn (transient-define-prefix ,name ()
                   :value (lambda ()
@@ -4217,12 +4237,45 @@ NO-EVAL is used for debug purposes."
 
 
 (defun npmjs-map-commands (commands)
-  "Recoursively map and eval COMMANDS.
+  "Recoursively process a list of COMMANDS and generate key bindings for them.
+
 COMMANDS is a nested list of property lists with such props:
 :cmd - a string, the command name e.g. \"install\", \"access list\".
 :key - a string, which will be used for generating key.
 :options - alist of descriptions (string) and its arguments.
-:subcommands - same as COMMANDS."
+:subcommands - same as COMMANDS.
+
+The function first checks if the COMMANDS list contains subcommands specified
+as keyword arguments. If so, it generates shortcuts for the subcommands using
+the `npmjs-key-builder-generate-shortcuts' function. It then recursively calls
+`npmjs-map-commands' on each subcommand and updates the COMMANDS list
+accordingly.
+
+Next, the function checks if the COMMANDS list contains options specified as
+keyword arguments. It adds shortcuts for the options using the
+`npmjs-add-options-shortcuts' function.
+
+If additional options are defined in `npmjs-extra-arguments',
+they are appended to the options list.
+
+The function then attaches common suffixes from `npmjs-options-suffixes'.
+
+It finally calls `npmjs-eval-symb' to evaluate the command and
+retrieve its associated symbol.
+
+If the COMMANDS list matches a command in `npmjs-map-replace-commands', it
+replaces the command with its corresponding name and key.
+
+If none of the above conditions match, the function assumes the COMMANDS list
+contains a standalone command.
+
+It generates a symbol for the command using `npmjs-make-symbol' with the
+property `npm-command'.
+
+If additional properties are defined in `npmjs-commands-props' for the command,
+they are appended to the result.
+
+The function returns the modified COMMANDS list after processing."
   (cond ((and (listp (car commands))
               (keywordp (car-safe (car commands))))
          (npmjs-key-builder-generate-shortcuts
@@ -4392,7 +4445,7 @@ USED-KEYS is a list of keys that shouldn't be used."
 
 ;;;###autoload
 (defun npmjs-install-project-dependencies ()
-  "Install current project as global dependency."
+  "Install dependencies for current project."
   (interactive)
   (when-let ((proj (npmjs-get-project-root)))
     (npmjs-nvm-with-current-node-version
@@ -4406,6 +4459,7 @@ USED-KEYS is a list of keys that shouldn't be used."
                                                               #'string-prefix-p
                                                               "-"))
                                        (npmjs-get-arguments))))))))))
+
 
 ;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
 (transient-define-prefix npmjs-install ()
@@ -4578,7 +4632,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
 (put 'npmjs-run-script 'npm-command "run-script")
 
 (defvar npmjs-evaluated-commands (make-hash-table :test 'equal)
-  "Last executed command lines, per project.")
+  "Hash table of npm versions and corresponding evaluated prefix commands.")
 
 (defun npmjs-pp (&rest objects)
   "Print OBJECTS in debug buffer."
@@ -4613,7 +4667,11 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
 
 
 (defun npmjs-setup-npm ()
-  "Setup, eval and call npm transient menu."
+  "Set up npmjs with the current npm version and descriptions.
+
+If descriptions for the current version are found, set them as the current
+descriptions. Otherwise, set the current descriptions using the prefix spec and
+update the descriptions alist accordingly. Return the current npm version."
   (let ((npm-version (npmjs-get-npm-version)))
     (if-let ((descriptions (cdr (assoc-string npm-version
                                               npmjs-descriptions-alist))))
