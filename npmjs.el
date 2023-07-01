@@ -1652,32 +1652,80 @@ represent a JSON false value.  It defaults to `:false'."
           'alist
           'list))))))
 
+(defun npmjs-get-package-files (dir)
+  "Return a list of package files in DIR.
+If DIR is a an existing directory, it checks if it contains a package.json file.
+If found, it returns a list with just that file.
+Otherwise, it recursively searches for package files in all subdirectories and
+ returns the accumulated list of found package files."
+  (when (and (file-exists-p dir)
+             (file-directory-p dir))
+    (if-let ((package-json (npmjs-expand-when-exists "package.json" dir)))
+        (list package-json)
+      (seq-reduce
+       (lambda (acc it)
+         (when (file-directory-p it)
+           (when-let ((found (npmjs-get-package-files it)))
+             (setq acc (nconc acc found))))
+         acc)
+       (directory-files dir t directory-files-no-dot-files-regexp)
+       '()))))
+
+
+
 (defun npmjs-global-packages ()
   "Return list of globally installed packages."
-  (npmjs-pluck-depenencies
-   (npmjs-json-parse-string
+  (condition-case nil
+      (npmjs-pluck-depenencies
+       (npmjs-json-parse-string
+        (npmjs-with-temp-buffer
+         (shell-command
+          "npm ls --global --json"
+          (current-buffer))
+         (let ((beg)
+               (end))
+           (when (re-search-forward "{"
+                                    nil t
+                                    1)
+             (setq beg (1- (point))))
+           (goto-char (point-max))
+           (when (re-search-backward "}"
+                                     nil t
+                                     1)
+             (setq end (1+ (point))))
+           (buffer-substring-no-properties
+            beg
+            end)))))
+    (error
+     (npmjs-global-packages-from-node-modules))))
+
+(defun npmjs-current-global-node-modules-path ()
+  "Return location of node_modules for current node version."
+  (ignore-errors
     (npmjs-nvm-with-current-node-version
-     (with-temp-buffer (shell-command
-                        "npm ls --global --json"
-                        (current-buffer))
-                       (let ((beg)
-                             (end))
-                         (when (re-search-forward "{"
-                                                  nil t
-                                                  1)
-                           (setq beg (1- (point))))
-                         (goto-char (point-max))
-                         (when (re-search-backward "}"
-                                                   nil t
-                                                   1)
-                           (setq end (1+ (point))))
-                         (buffer-substring-no-properties
-                          beg
-                          end)))))))
+     (npmjs-expand-when-exists
+      "lib/node_modules"
+      (car
+       (process-lines
+        "npm" "prefix"
+        "--global"))))))
+
+(defun npmjs-global-packages-from-node-modules ()
+  "Return list of global packages and corresponding versions."
+  (when-let ((node-modules-path (npmjs-current-global-node-modules-path)))
+    (mapcar
+     (npmjs--compose
+       (npmjs--converge
+        list
+        [(apply-partially #'alist-get 'name)
+         (apply-partially #'alist-get
+                          'version)])
+       (npmjs--rpartial npmjs-read-json 'alist))
+     (npmjs-get-package-files node-modules-path))))
 
 (defun npmjs-global-package-completion-table ()
   "Read globally installed js packages."
-  (let* ((alist (npmjs-global-packages))
+  (let* ((alist (ignore-errors (npmjs-global-packages)))
          (annotf (lambda (it)
                    (let ((value (cdr-safe (assoc it alist))))
                      (concat "@" (if (listp value)
