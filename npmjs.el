@@ -2100,7 +2100,8 @@ By default FN is man."
     (substring s1 0 i)))
 
 (defun npmjs-key-builder-capitalize-variants (word)
-  "Return list of words of WORD, but it with upcased letter."
+  "Return a list of capitalized variants of WORD.
+It is split WORD into chars and capitalizing each part."
   (let ((cands)
         (parts (split-string word "" t)))
     (dotimes (i (length parts))
@@ -2123,8 +2124,52 @@ By default FN is man."
       (substring-no-properties word 0 len)
     word))
 
+(defun npmjs-key-splitted-variants (word len separator)
+  "Return a list of possible shortcuts for the given WORD splitted by SEPARATOR.
+LEN specifies the maximum length of each variant."
+  (when-let* ((slen
+               (when (> len 1)
+                 (1- len)))
+              (splitted (mapcar (apply-partially
+                                 #'npmjs-key-builder-safe-substring 1)
+                                (seq-drop (split-string word separator t)
+                                          1)))
+              (first-letter (npmjs-key-builder-safe-substring 1 word)))
+    (seq-uniq
+     (append (mapcar (lambda (it)
+                       (unless (> slen (length it))
+                         (concat first-letter
+                                 (string-join it ""))))
+                     (seq-split splitted slen))
+             (list
+              (mapconcat (lambda (_) first-letter)
+                         (number-sequence 0 slen)
+                         ""))))))
+
+(defun npmjs-key-lowecased-variants (word len)
+  "Return a list of possible shortcuts for the given WORD.
+LEN specifies the maximum length of each variant."
+  (when-let* ((slen
+               (when (> len 1)
+                 (1- len)))
+              (splitted (seq-drop (split-string word "" t)
+                                  1))
+              (first-letter (npmjs-key-builder-safe-substring 1 word)))
+    (seq-uniq
+     (append (mapcar (lambda (it)
+                       (unless (> slen (length it))
+                         (concat first-letter
+                                 (string-join it ""))))
+                     (seq-split splitted slen))
+             (list
+              (mapconcat (lambda (_) first-letter)
+                         (number-sequence 0 slen)
+                         ""))))))
+
+
+
 (defun npmjs-key-builder-get-all-key-strategies (word len)
-  "Generate preffered shortcut from WORD with length LEN."
+  "Generate preffered shortcuts from WORD with length LEN."
   (let* ((parts (append (split-string word "[^a-z]" t)
                         (list (replace-regexp-in-string "[^a-z]" "" word))))
          (parts-len (length parts))
@@ -2137,10 +2182,7 @@ By default FN is man."
           (mapcar finalize (npmjs-key-builder-capitalize-variants
                             (npmjs-key-builder-safe-substring
                              len
-                             (replace-regexp-in-string
-                              "[^a-z]"
-                              ""
-                              word))))))
+                             word)))))
     (seq-sort-by
      (lambda (it)
        (cond ((string-match-p "[0-9]" it)
@@ -2151,6 +2193,7 @@ By default FN is man."
      #'>
      (seq-uniq (append
                 vars
+                (npmjs-key-splitted-variants word len "^[a-z]")
                 (mapcar
                  (lambda (n)
                    (funcall finalize (mapconcat
@@ -2158,6 +2201,7 @@ By default FN is man."
                                        #'npmjs-key-builder-safe-substring n)
                                       parts "")))
                  (number-sequence 1 (min len parts-len)))
+                (npmjs-key-splitted-variants word len "")
                 (mapcar
                  (lambda (n)
                    (funcall finalize (mapconcat
@@ -2166,117 +2210,164 @@ By default FN is man."
                                       (reverse parts) "")))
                  (number-sequence 1 (min len parts-len))))))))
 
-(defun npmjs-key-builder--generate-shortcuts (items &optional key-fn value-fn
-                                                    used-keys key-len)
-  "Generate shortcuts from list of ITEMS.
-If KEY-FN is nil, ITEMS should be list of strings or symbols.
-If KEY-FN is a function, it will be called with every item of list, and should
-return string that will be as basis for shortcut.
-If VALUE-FN is nil, result is an alist of generated keys and corresponding
-items.
-If VALUE-FN is non nil, return a list of results of calling VALUE-FN with two
-arguments - generated shortcut and item.
-USED-KEYS is a list of keys that shouldn't be used.
-KEY-LEN is minimal length of keys."
-  (let* ((value-fn (or value-fn (lambda (key value)
-                                  (if (proper-list-p value)
-                                      (append (list key) value)
-                                    (cons key value)))))
-         (total (length items))
-         (random-variants (append
-                           (mapcar #'char-to-string
-                                   (number-sequence (string-to-char
-                                                     "a")
-                                                    (string-to-char
-                                                     "z")))
-                           (mapcar #'char-to-string
-                                   (number-sequence (string-to-char
-                                                     "A")
-                                                    (string-to-char
-                                                     "Z")))
-                           (list "@" ".")))
-         (variants-len (length random-variants))
-         (min-len
-          (or key-len
-              (if used-keys
-                  (length (car (seq-sort-by #'length #'> used-keys)))
-                (cond ((>= variants-len total)
-                       1)
-                      ((>= variants-len (/ total 2))
-                       2)
-                      (t 3))))))
-    (let ((shortcuts used-keys)
-          (used-words '())
-          (all-keys (mapcar (lambda (def)
-                              (if key-fn
-                                  (funcall key-fn def)
-                                (if (symbolp def)
-                                    (symbol-name def)
-                                  def)))
-                            items))
-          (result))
-      (dotimes (i (length items))
-        (when-let* ((def (nth i items))
-                    (word (if key-fn
-                              (funcall key-fn def)
-                            (if (symbolp def)
-                                (symbol-name def)
-                              def))))
-          (when (not (member word used-words))
-            (push word used-words)
-            (let ((short
-                   (downcase
-                    (substring-no-properties word 0
-                                             (min min-len
-                                                  (length word))))))
-              (setq short (if (string-match-p short "[a-z]")
-                              (replace-regexp-in-string "[^a-z]" "" short)
-                            short))
-              (setq short
-                    (seq-find
-                     (lambda (it)
-                       (not
-                        (seq-find (apply-partially
-                                   #'string-prefix-p it)
-                                  shortcuts)))
-                     (append
-                      (npmjs-key-builder-get-all-key-strategies word
-                                                                min-len)
-                      (or (seq-remove (lambda (key)
-                                        (seq-find (apply-partially
-                                                   #'string-prefix-p
-                                                   (downcase key))
-                                                  all-keys))
-                                      random-variants)
-                          random-variants)
-                      ;; (when (= min-len 1)
-                      ;;   )
-                      )))
-              (while (and
-                      (< (length short) min-len))
-                (setq short (concat short (number-to-string (random 10)))))
-              (push short shortcuts)
-              (push
-               (cond ((functionp value-fn)
-                      (funcall value-fn short def))
-                     (t (cons short def)))
-               result)))))
-      (reverse result))))
+
+
+
+(defun npmjs-key-builder--generate-shortcut-key (word key-len shortcuts
+                                                      all-keys)
+  "Generate a shortcut key for a given word based on specified parameters.
+It takes four arguments: WORD, KEY-LEN, SHORTCUTS, and ALL-KEYS.
+
+It first retrieves a list of random variants from the alphabet using
+`npmjs-key-builder-get-alphabet'.
+
+Next, it creates a lowercase substring of WORD from the beginning up to the
+minimum value of KEY-LEN and the length of WORD.
+
+If the substring contains any lowercase alphabetic characters, it removes all
+non-alphabetic characters using REPLACE-REGEXP-IN-STRING.
+
+It then finds a suitable shortcut key by searching for a string that doesn't
+have any prefixes that match the elements in SHORTCUTS. It looks for such a
+string in the concatenation of all possible key strategies for the WORD and a
+list derived from RANDOM-VARIANTS, with duplicate elements removed. If no
+suitable key is found, it appends random digits until the desired KEY-LEN is
+reached.
+
+Finally, it returns the resulting shortcut key."
+  (let ((short
+         (downcase
+          (substring-no-properties word 0
+                                   (min key-len
+                                        (length word))))))
+    (setq short (if (string-match-p short "[a-z]")
+                    (replace-regexp-in-string "^[^a-z]+" "" short)
+                  short))
+    (setq short
+          (seq-find
+           (lambda (it)
+             (not
+              (seq-find
+               (apply-partially
+                #'string-prefix-p it)
+               shortcuts)))
+           (append
+            (npmjs-key-builder-get-all-key-strategies
+             word
+             key-len)
+            (let ((random-variants
+                   (npmjs-key-builder-get-alphabet)))
+              (or (seq-remove (lambda (key)
+                                (seq-find (apply-partially
+                                           #'string-prefix-p
+                                           (downcase key))
+                                          all-keys))
+                              random-variants)
+                  random-variants)))))
+    (while (and
+            (< (length short) key-len))
+      (setq short (concat (or short "")
+                          (number-to-string (random 10)))))
+    short))
 
 (defun npmjs-key-builder-generate-shortcuts (items &optional key-fn value-fn
                                                    used-keys key-len)
-  "Generate shortcuts from list of ITEMS.
-If KEY-FN is nil, ITEMS should be list of strings or symbols.
+  "Generate shortcuts for a list of ITEMS using various strategies.
+
+ITEMS is a list of items for which to generate shortcuts.
+
+KEY-FN is a function to transform each item into a key. If KEY-FN is nil,
+ITEMS should be list of strings or symbols.
+
 If KEY-FN is a function, it will be called with every item of list, and should
 return string that will be as basis for shortcut.
+
 If VALUE-FN is nil, result is an alist of generated keys and corresponding
-items.
-If VALUE-FN is non nil, return a list of results of calling VALUE-FN with two
+items, othervise return a list of results of calling VALUE-FN with two
 arguments - generated shortcut and item.
-USED-KEYS is a list of keys that shouldn't be used.
-KEY-LEN is minimal length of keys."
-  (npmjs-key-builder--generate-shortcuts items key-fn value-fn
-                                         used-keys key-len))
+
+USED-KEYS is a list of keys that have already been used.
+
+KEY-LEN is the desired length of the generated shortcuts.
+
+If not provided, it is determined based on the number of items and
+available variants."
+  (unless key-fn (setq key-fn #'npmjs-key-builder-default-key-fn))
+  (unless value-fn (setq value-fn #'npmjs-key-builder-default-value-fn))
+  (let ((min-len
+         (or key-len
+             (if used-keys
+                 (length (car (seq-sort-by #'length #'> used-keys)))
+               (let ((variants-len (length (npmjs-key-builder-get-alphabet)))
+                     (total (length items)))
+                 (cond ((>= variants-len total)
+                        1)
+                       ((>= variants-len (/ total 2))
+                        2)
+                       (t 3)))))))
+    (let ((shortcuts used-keys)
+          (used-words '())
+          (all-keys (mapcar
+                     (npmjs--compose
+                       (npmjs--cond
+                         [(npmjs--compose not
+                            (apply-partially #'string-match-p "[a-z]"))
+                          identity]
+                         [t (apply-partially #'replace-regexp-in-string
+                                             "^[^a-z]+" "")])
+                       (lambda (it)
+                         (funcall key-fn it)))
+                     items))
+          (result))
+      (dotimes (i (length items))
+        (let ((word (nth i all-keys))
+              (def (nth i items)))
+          (when-let* ((shortcut
+                       (when (not (member word used-words))
+                         (npmjs-key-builder--generate-shortcut-key
+                          word
+                          min-len
+                          shortcuts
+                          all-keys)))
+                      (value (funcall value-fn shortcut def)))
+            (setq used-words (push word used-words))
+            (setq shortcuts (push shortcut shortcuts))
+            (setq result (push value result)))))
+      (reverse result))))
+
+(defun npmjs-key-builder-default-key-fn (def)
+  "If DEF is a symbol, return a string with the symbol name.
+Otherwise return DEF as it."
+  (if (symbolp def)
+      (symbol-name def)
+    def))
+
+(defun npmjs-key-builder-default-value-fn (key value)
+  "Return the cons of KEY and VALUE.
+If VALUE is a proper list, append KEY to VALUE.
+Otherwise, cons KEY and VALUE."
+  (if (proper-list-p value)
+      (append (list key) value)
+    (cons key value)))
+
+(defun npmjs-key-builder-get-alphabet ()
+  "Return the alphabet to be used for building keys.
+It includes lowercase letters from a to z,
+uppercase letters from A to Z,
+and the special characters @ and punctuation mark"
+  (append
+   (mapcar #'char-to-string
+           (number-sequence (string-to-char
+                             "a")
+                            (string-to-char
+                             "z")))
+   (mapcar #'char-to-string
+           (number-sequence (string-to-char
+                             "A")
+                            (string-to-char
+                             "Z")))
+   (list "@" ".")))
+
 
 (defun npmjs-key-builder-take-description (item)
   "Return description from transient ITEM."
