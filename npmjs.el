@@ -4,7 +4,7 @@
 
 ;; Author: Karim Aziiev <karim.aziiev@gmail.com>
 ;; URL: https://github.com/KarimAziev/npmjs
-;; Version: 0.1.0-git
+;; Version: 0.2.0
 ;; Keywords: tools
 ;; Package-Requires: ((emacs "28.1") (transient "0.4.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
