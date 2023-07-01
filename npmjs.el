@@ -1270,35 +1270,40 @@ INITIAL-INPUT can be given as the initial minibuffer input."
           (progn
             (add-hook 'minibuffer-setup-hook #'npmjs-ivy-minibuffer-setup
                       t)
-            (ivy-read
-             (concat (string-trim (or prompt "Repo:")) " ")
-             (lambda (str)
-               (or
-                (ivy-more-chars)
-                (progn
-                  (counsel--async-command
-                   (concat "npm search --prefer-offline --no-color --parseable "
-                           str))
-                  '("" "working..."))))
-             :initial-input
-             (when initial-input
-               (string-join (split-string
-                             initial-input "[\s\t,]+"
-                             t)
-                            ","))
-             :dynamic-collection t
-             :history (or
-                       history
-                       'npmjs-history-dependencies)
-             :action (lambda (c)
-                       (or (car (split-string (or c
-                                                  (when (boundp
-                                                         'ivy-text)
-                                                    ivy-text)
-                                                  "")
-                                              nil t))))
-             :unwind #'counsel-delete-process
-             :caller 'npmjs-ivy-read-npm-dependency))
+            (let
+                ((cmd-str
+                  (if (ignore-errors (npmjs-online-p))
+                      "npm search --no-color --parseable "
+                    "npm search --prefer-offline --no-color --parseable ")))
+              (ivy-read
+               (concat (string-trim (or prompt "Repo:")) " ")
+               (lambda (str)
+                 (or
+                  (ivy-more-chars)
+                  (progn
+                    (counsel--async-command
+                     (concat cmd-str
+                             str))
+                    '("" "working..."))))
+               :initial-input
+               (when initial-input
+                 (string-join (split-string
+                               initial-input "[\s\t,]+"
+                               t)
+                              ","))
+               :dynamic-collection t
+               :history (or
+                         history
+                         'npmjs-history-dependencies)
+               :action (lambda (c)
+                         (or (car (split-string (or c
+                                                    (when (boundp
+                                                           'ivy-text)
+                                                      ivy-text)
+                                                    "")
+                                                nil t))))
+               :unwind #'counsel-delete-process
+               :caller 'npmjs-ivy-read-npm-dependency)))
         (remove-hook 'minibuffer-setup-hook #'npmjs-ivy-minibuffer-setup)))))
 
 (defun npmjs-read-new-dependency (&optional prompt initial-input history)
