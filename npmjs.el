@@ -1120,8 +1120,6 @@ With a prefix ARG, allow editing."
 (define-derived-mode npmjs-compilation-mode compilation-mode "NPMJS"
   "Major mode for the NPM compilation buffer."
   (use-local-map compilation-mode-map)
-  (setq major-mode 'npmjs-compilation-mode)
-  (setq mode-name "NPMJS")
   (setq-local truncate-lines t)
   (add-hook 'compilation-filter-hook
             #'npmjs-compilation-filter-hook nil t))
