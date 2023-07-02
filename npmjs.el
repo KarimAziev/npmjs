@@ -2134,36 +2134,15 @@ LEN specifies the maximum length of each variant."
                                           1)))
               (first-letter (npmjs-key-builder-safe-substring 1 word)))
     (seq-uniq
-     (append (mapcar (lambda (it)
-                       (unless (> slen (length it))
-                         (concat first-letter
-                                 (string-join it ""))))
-                     (seq-split splitted slen))
+     (append (reverse (mapcar (lambda (it)
+                                (unless (> slen (length it))
+                                  (concat first-letter
+                                          (string-join it ""))))
+                              (seq-split splitted slen)))
              (list
               (mapconcat (lambda (_) first-letter)
                          (number-sequence 0 slen)
                          ""))))))
-
-(defun npmjs-key-lowecased-variants (word len)
-  "Return a list of possible shortcuts for the given WORD.
-LEN specifies the maximum length of each variant."
-  (when-let* ((slen
-               (when (> len 1)
-                 (1- len)))
-              (splitted (seq-drop (split-string word "" t)
-                                  1))
-              (first-letter (npmjs-key-builder-safe-substring 1 word)))
-    (seq-uniq
-     (append (mapcar (lambda (it)
-                       (unless (> slen (length it))
-                         (concat first-letter
-                                 (string-join it ""))))
-                     (seq-split splitted slen))
-             (list
-              (mapconcat (lambda (_) first-letter)
-                         (number-sequence 0 slen)
-                         ""))))))
-
 
 
 (defun npmjs-key-builder-get-all-key-strategies (word len)
