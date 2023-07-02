@@ -1,3 +1,5 @@
+* v0.2.1    UNRELEASED
+
 * v0.2.0    2023-07-01
 - Ensure keys for package.json scripts and options in ~run-script~ are unique
 - Fix compilation warnings and add documentation more functions
