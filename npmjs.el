@@ -3216,11 +3216,11 @@ If INHIBIT-EVAL no eval."
        (nth n list-or-vector)))))
 
 (defun npmjs-parse-no-argument-p (argument)
-  "Check whether ARGUMENT is line --no-[arg]|arg."
+  "Check whether ARGUMENT starts from --no prefix, e.g.: --no-[arg]|arg."
   (string-match-p "--no-" argument))
 
 (defun npmjs-normalize-description (str)
-  "Stip STR."
+  "Trim STR and strip hyphens."
   (let ((res (replace-regexp-in-string "^[-]+" "" (string-trim str))))
     (if (string-empty-p res)
         str
@@ -3238,7 +3238,8 @@ If INHIBIT-EVAL no eval."
     founds))
 
 (defun npmjs-parse-argument (vect &optional cmd)
-  "Parse argument VECT for CMD."
+  "Parse the VECT argument and return options for npmjs command CMD.
+Normalize multi-value arguments and parse hints."
   (when (vectorp vect)
     (setq vect (append vect nil)))
   (when (stringp vect)
