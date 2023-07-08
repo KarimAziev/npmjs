@@ -306,9 +306,10 @@ The previous values will be restored upon exit."
     ,@body))
 
 (defun npmjs-exec-with-args (command &rest args)
-  "Run a shell COMMAND with ARGS."
+  "Run a shell COMMAND with arguments ARGS.
+Quote arguments with whitespacesas argument to an inferior shell."
   (let ((cmdline (mapconcat (lambda (it)
-                              (if (string-match-p "\s\t\n" it)
+                              (if (string-match-p "[\s\t\n]" it)
                                   (shell-quote-argument it)
                                 it))
                             (append (list command)
