@@ -125,7 +125,8 @@ The other arguments are substituted into it to make the result, a string."
              (concat "npmjs: " (apply #'format string arguments)))))
 
 (defun npmjs--plist-remove-nils (plist)
-  "Return the keys in PLIST."
+  "Remove nil values from a property list.
+Argument PLIST is the property list to be processed."
   (let* ((result (list 'head))
          (last result))
     (while plist
@@ -138,7 +139,7 @@ The other arguments are substituted into it to make the result, a string."
     (cdr result)))
 
 (defun npmjs-unquote (exp)
-  "Return EXP unquoted."
+  "Remove any outermost quotes from the expression EXP."
   (declare (pure t)
            (side-effect-free t))
   (while (memq (car-safe exp) '(quote function))
@@ -147,15 +148,20 @@ The other arguments are substituted into it to make the result, a string."
 
 (eval-and-compile
   (defun npmjs--expand (init-fn)
-    "If INIT-FN is a non-quoted symbol, add a sharp quote.
-Otherwise, return it as is."
+    "Expand the given macro and return the expanded form.
+Argument INIT-FN is the macro to be expanded."
     (setq init-fn (macroexpand init-fn))
     (if (symbolp init-fn)
         `(#',init-fn)
       `(,init-fn))))
 
 (defmacro npmjs--compose (&rest functions)
-  "Return right-to-left composition from FUNCTIONS."
+  "Create right-to-left composition from a list of FUNCTIONS.
+
+Return the new lambda function that applies the
+FUNCTIONS in reverse order.
+
+Argument FUNCTIONS is a list of functions to be composed."
   (declare (debug t)
            (pure t)
            (indent defun)
@@ -172,8 +178,8 @@ Otherwise, return it as is."
              `(apply ,@(npmjs--expand init-fn) ,args-var)))))))
 
 (defmacro npmjs--const (value)
-  "Return a function that always returns VALUE.
-This function accepts any number of arguments but ignores them."
+  "Create a constant function that returns a given VALUE.
+Argument VALUE is the value to be returned."
   (declare (pure t)
            (side-effect-free error-free))
   (let ((arg (make-symbol "_")))
@@ -328,26 +334,27 @@ Quote arguments with whitespacesas argument to an inferior shell."
 
 
 (defmacro npmjs-nvm-with-current-node-version (&rest body)
-  "Set nvm variables for node VERSION in the environment and execute BODY.
-VARIABLES is a list of variable settings of the form (VAR VALUE),
-where VAR is the name of the variable (a string) and VALUE
-is its value (also a string).
-
-The previous values will be restored upon exit."
+  "Execute a BODY of code with the current Node version.
+Argument BODY is the code to be executed.
+Set the variable `npmjs--current-node-version' to the current Node version,
+obtained from the NVM path or by prompting the user.
+Execute the BODY of code."
   `(npmjs-nvm-with-env-vars
-     (setq npmjs--current-node-version
-           (or npmjs--current-node-version
-               (if (npmjs-nvm-path)
-                   (npmjs-confirm-node-version)
-                 (replace-regexp-in-string "^v" ""
-                                           (car
-                                            (process-lines
-                                             "node"
-                                             "-v"))))))
-     ,@body))
+    (setq npmjs--current-node-version
+          (or npmjs--current-node-version
+              (if (npmjs-nvm-path)
+                  (npmjs-confirm-node-version)
+                (replace-regexp-in-string "^v" ""
+                                          (car
+                                           (process-lines
+                                            "node"
+                                            "-v"))))))
+    ,@body))
 
 (defun npmjs-nvm-path ()
-  "Return path to NVM_DIR if exists."
+  "Return the path to the nvm script.
+It search for `nvm.sh' file in the directory
+either from environment variable NVM_DIR or in ~/.nvm."
   (when-let* ((nvm-dir (or (getenv "NVM_DIR")
                            (when (file-exists-p "~/.nvm/")
                              "~/.nvm/")))
@@ -358,8 +365,8 @@ The previous values will be restored upon exit."
 (defvar npmjs-nvm-remote-node-versions-alist nil)
 
 (defun npmjs-nvm-ls-remote ()
-  "Exec $NVM_DIR/nvm.sh and run nvm ls-remote command.
-Return alist of node versions and aliases."
+  "Return a list of available Node.js versions from the remote NVM repository.
+It is an alist of node versions and aliases."
   (when-let* ((nvm-path (npmjs-nvm-path))
               (node-versions
                (npmjs-exec-with-args "source" nvm-path
@@ -382,7 +389,7 @@ Return alist of node versions and aliases."
        "[\n]" t)))))
 
 (defun npmjs-nvm-read-remote-node-version ()
-  "Install node VERSION with nvm."
+  "Return a version selected from a list of available Node.js versions."
   (when-let ((node-versions
               (or npmjs-nvm-remote-node-versions-alist
                   (setq npmjs-nvm-remote-node-versions-alist
@@ -2118,14 +2125,26 @@ It is split WORD into chars and capitalizing each part."
     (reverse cands)))
 
 (defun npmjs-key-builder-safe-substring (len word)
-  "Substring WORD from zero to LEN."
+  "Return a substring of WORD if its length is less than or equal to LEN.
+Argument LEN is the desired length of the substring.
+Argument WORD is the string from which the substring will be extracted."
   (if (> (length word) len)
       (substring-no-properties word 0 len)
     word))
 
 (defun npmjs-key-splitted-variants (word len separator)
-  "Return a list of possible shortcuts for the given WORD splitted by SEPARATOR.
-LEN specifies the maximum length of each variant."
+  "Generate npmjs key splitted variants.
+
+Argument WORD is the word to split.
+Argument LEN is the length of each variant.
+Argument SEPARATOR is the separator to split the WORD.
+
+When LEN is greater than 1, generate the splitted variants of WORD by splitting
+it using SEPARATOR and dropping the first element.
+Then, for each variant, check if its length is not greater than LEN.
+If true, concatenate the first letter of WORD with the variant.
+
+Finally, remove duplicates and return the result."
   (when-let* ((slen
                (when (> len 1)
                  (1- len)))
@@ -2147,7 +2166,21 @@ LEN specifies the maximum length of each variant."
 
 
 (defun npmjs-key-builder-get-all-key-strategies (word len)
-  "Generate preffered shortcuts from WORD with length LEN."
+  "Get all key strategies for building a key from a given WORD and length LEN.
+
+Argument WORD is the word from which the key will be built.
+Argument LEN is the desired length of the key.
+
+This function takes the WORD and splits it into parts, removing non-alphabetic
+characters.
+
+It then generates variants of the key by capitalizing different parts of the
+WORD.
+
+The function uses a sorting algorithm to prioritize the variants based on
+certain criteria.
+
+The final list of key strategies is returned."
   (let* ((parts (append (split-string word "[^a-z]" t)
                         (list (replace-regexp-in-string "[^a-z]" "" word))))
          (parts-len (length parts))
@@ -2401,7 +2434,7 @@ and the special characters @ and punctuation mark"
     (npmjs-compile (npmjs-confirm-command cmd args))))
 
 (defun npmjs-substitute-hints (str)
-  "Remove hints from STR."
+  "Remove hints from a string STR."
   (with-temp-buffer
     (insert
      str)
@@ -2460,6 +2493,7 @@ and the special characters @ and punctuation mark"
 
 (defun npmjs-group-vectors (arguments &optional height win-width)
   "Group ARGUMENTS into vector.
+
 Default value for HEIGHT is `max-mini-window-height',
 and for WIN-WIDTH - window width."
   (let* ((descriptions
@@ -2559,7 +2593,8 @@ By default ARG is t."
 
 
 (defun npmjs-stringify (item)
-  "Recoursively stringify ITEM."
+  "Recoursively stringify convert an ITEM to a string representation.
+Argument ITEM is the item to be converted."
   (pcase item
     ((pred not)
      item)
@@ -2585,10 +2620,10 @@ By default ARG is t."
          (longest (+ 5
                      (apply #'max (mapcar
                                    (npmjs--compose
-                                     (npmjs--cond
-                                       [stringp length]
-                                       [t (npmjs--const 0)])
-                                     car-safe)
+                                    (npmjs--cond
+                                     [stringp length]
+                                     [t (npmjs--const 0)])
+                                    car-safe)
                                    alist))))
          (fmt (concat (propertize " " 'display
                                   `(space
@@ -2617,8 +2652,10 @@ By default ARG is t."
                                                          initial-input hist def
                                                          inherit-input-method)
   "Read multiple strings in the minibuffer, with completion.
+
 If ANNOT-VALUE is non nil, it will be called with value and should return
 string with annotation.
+
 PROMPT, COLLECTION, PREDICATE, REQUIRE-MATCH, INITIAL-INPUT, HIST, DEF,
 and INHERIT-INPUT-METHOD are the same as for `completing-read'."
   (let ((table-completion
@@ -2660,7 +2697,7 @@ as those for `completing-read'."
                                            "\s"
                                            (substitute-command-keys
                                             "(`\\<npmjs-multi-completion-map>\
-\\[npmjs-throw-done]' to finish)\s")
+\\[npmjs-throw-done]'to finish)\s")
                                            (if choices
                                                (concat
                                                 "("
@@ -2738,7 +2775,7 @@ It also temporarily setup extra keymap `npmjs-multi-completion-map'."
                                                   " "
                                                   (substitute-command-keys
                                                    "(`\\<npmjs-multi-completion-map>\
-\\[npmjs-throw-done]' to finish): "))
+\\[npmjs-throw-done]'to finish): "))
                                               initial-input history))))
                            (cond ((or (not ch)
                                       (when (listp ch)
@@ -3700,13 +3737,10 @@ This function is for debug purposes."
                (not force))
     (npmjs--get-all-npm-versions-descriptions-alist))
   (npmjs-pp npmjs-all-descriptions-alist))
-
-
 (defun npmjs-upcased-p (str)
   "Return non nil is string STR begins with letters in uppercase."
   (let ((case-fold-search nil))
     (string-match-p "^[A-Z]" str)))
-
 (defun npmjs-get-list-item-if-one (item)
   "If ITEM is a list of one element, return those element."
   (cond ((and (proper-list-p item)
@@ -3717,7 +3751,6 @@ This function is for debug purposes."
          (npmjs-nth
           0 item))
         (t item)))
-
 (defun npmjs-ensure-option-ending (long)
   "Maybe add space to LONG option."
   (if (or (string-suffix-p "=" long)
@@ -3725,18 +3758,15 @@ This function is for debug purposes."
           (string-suffix-p " " long))
       long
     (concat long " ")))
-
 (defun npmjs-short-long-option-p (str)
   "Return non nil if STR has short and long option."
   (string-match-p "^\\(-\\([a-z]+\\)\\)[|]\\(--\\([a-z-0-9-]+\\)\\)$"
                   str))
-
 (defun npmjs-get-long-short-option (str)
   "Split STR to list of long and short option."
   (if (npmjs-short-long-option-p str)
       (reverse (split-string str "|" t))
     nil))
-
 (defun npmjs-flatten-vectors (item)
   "Flatten vector ITEM."
   (cond ((vectorp item)
@@ -3750,7 +3780,6 @@ This function is for debug purposes."
                                (_ (vconcat acc (vector it))))))
                      item
                      []))))
-
 (defun npmjs-multi-extract-vector (vect)
   "If vector contains VECT with the same first element, return those element.
 If not, just return VECT."
@@ -3761,7 +3790,6 @@ If not, just return VECT."
                   (npmjs-nth 0 vect))
        subvect))
    vect))
-
 (defun npmjs-normalize-vectors (vect)
   "Normalize vector VECT."
   (let ((res (npmjs-flatten-vectors
@@ -3779,7 +3807,6 @@ If not, just return VECT."
                             (append (list (string-join left ""))
                                     right)))
         res))))
-
 (defun npmjs-make-command-doc (cmd lines)
   "Make command CMD description from help LINES."
   (string-join
@@ -3800,14 +3827,12 @@ If not, just return VECT."
                           it)))))
                 lines)
    "\n"))
-
 (defun npmjs-map-descriptions-lines (alist &optional inhibit-eval)
   "Map ALIST of commands and arguments.
 If INHIBIT-EVAL is non nil, don't eval infixes."
   (mapcar (lambda (it)
             (npmjs-map-command-cell-lines it inhibit-eval))
           alist))
-
 (defun npmjs-single-value-to-hint (str)
   "Replace single value in argument STR with hint.
 For example, --registry=url to --registry=<url>."
@@ -3818,7 +3843,6 @@ For example, --registry=url to --registry=<url>."
       (let ((value (match-string-no-properties 2)))
         (replace-match (concat "<" value ">") nil nil nil 2)))
     (buffer-string)))
-
 (defun npmjs-prenormalize-line (curr)
   "Cleanup string CURR."
   (setq curr (replace-regexp-in-string "[(]same as[ ][^)]+)" "" curr))
@@ -3862,7 +3886,9 @@ If INHIBIT-EVAL is nil, don't eval infixes."
    '()))
 
 (defun npmjs-parse-subcommands-options (rawoptions)
-  "Parse subcommand line options RAWOPTIONS."
+  "Parse subcommands and options from raw options.
+Argument RAWOPTIONS is a list of strings or vectors representing options.
+Return a reversed list of normalized options and subcommands."
   (nreverse
    (seq-reduce
     (lambda (acc it)
@@ -4056,7 +4082,8 @@ If INHIBIT-EVAL is non nil, don't eval infixes."
                                 inhibit-eval))
 
 (defun npmjs-read-line (line)
-  "Tokenize single description LINE."
+  "Read a LINE of text and tokenize it if it is a string.
+Argument LINE is the line of text to be processed."
   (if (stringp line)
       (with-temp-buffer
         (insert line)
@@ -4085,7 +4112,14 @@ TRANSFORM-FN should return transformed item."
                (seq-copy items) '())))
 
 (defun npmjs-get-and-forward-command-description (column)
-  "Jump to next empty line that start with COLUMN whitespace."
+  "Get and forward the description of a command in an npmjs buffer.
+
+Argument COLUMN is the column number where the command starts.
+This function searches for the command description starting from the current
+line and COLUMN position.
+
+Return a cons cell where the car is the command name and the cdr is a list
+of lines containing the description."
   (let ((initial-pos (point))
         (end (line-end-position)))
     (when (and (> (- initial-pos column)
@@ -4123,7 +4157,7 @@ TRANSFORM-FN should return transformed item."
           (cons cmd lines))))))
 
 (defun npmjs-parse-columns-to-alist ()
-  "Search and parse COMMAND flags using REGEXP and NUM."
+  "Return a list of descriptions parsed from columns in npmjs buffer."
   (let ((rows)
         (regexp "^\\([\s\t]+\\)\\([a-z0-9]+[a-z0-9_-]+\\)[:]?[\s]")
         (description)
