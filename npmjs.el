@@ -6,7 +6,7 @@
 ;; URL: https://github.com/KarimAziev/npmjs
 ;; Version: 0.2.0.50-git
 ;; Keywords: tools
-;; Package-Requires: ((emacs "28.1") (transient "0.4.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.4.1"))
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;; This file is NOT part of GNU Emacs.
@@ -108,6 +108,12 @@ If a function, it will be called with one argument - a formatted string."
   :type '(choice
           (const :tag "None" nil)
           (function :tag "Function"))
+  :group 'npmjs)
+
+(defcustom npmjs-use-comint-in-scripts t
+  "Whether to run package.json scripts as comint.
+If nil, use `compile' command."
+  :type '(boolean)
   :group 'npmjs)
 
 (defvar-local npmjs--current-command nil)
@@ -644,22 +650,22 @@ If ALL, read all installed versions."
           (npmjs-nvm-get-nvmrc-required-node-version))
          (curr-node npmjs--current-node-version)
          (cands
-          (seq-uniq
-           (mapcar #'npmjs-nvm-strip-prefix
-                   (append (delq nil
-                                 (list
-                                  default-global
-                                  current-global
-                                  project-node
-                                  curr-node))
-                           installed))))
+          (mapcar #'npmjs-nvm-strip-prefix
+                  (append
+                   (delq nil
+                         (list
+                          default-global
+                          current-global
+                          project-node
+                          curr-node))
+                   installed)))
          (annotf (lambda (it)
                    (cond ((equal it default-global)
                           " System Global")
                          ((equal it current-global)
                           " Current global")
                          ((equal it project-node)
-                          "required by (nvmrc) ")
+                          " required by (nvmrc)")
                          ((equal it curr-node)
                           " Buffer local node ")))))
     (setq npmjs--current-node-version
@@ -673,7 +679,20 @@ If ALL, read all installed versions."
                                    `(metadata
                                      (annotation-function
                                       .
-                                      ,annotf))
+                                      ,annotf)
+                                     (display-sort-fn .
+                                                      ,(lambda (it)
+                                                         (seq-sort-by
+                                                          (or
+                                                           (cdr
+                                                            (assoc-string
+                                                             it
+                                                             '((project-node . 1)
+                                                               (default-global . 2)
+                                                               (current-global . 3)
+                                                               (curr-node . 4))))
+                                                           5)
+                                                          #'< it))))
                                  (complete-with-action
                                   action
                                   cands
@@ -757,6 +776,19 @@ If ALL, read all installed versions."
   (npmjs-confirm-node-version t)
   (when transient-current-command
     (npmjs)))
+
+;;;###autoload
+(defun npmjs-nvm-alias (version)
+  "Modify environment variables to use VERSION of node."
+  (interactive (list (npmjs-confirm-node-version t)))
+  (let ((vars (npmjs-nvm-get-env-vars version)))
+    (dolist (elem vars)
+      (setenv
+       (car elem)
+       (cadr elem)))
+    (npmjs-run-nvm-command
+     nil
+     "nvm" "alias" "default" version "&&" "nvm" "use" "default")))
 
 ;;;###autoload
 (defun npmjs-nvm-use-switch-system-node-version (version)
@@ -980,6 +1012,23 @@ Return list of project roots."
     roots))
 
 (defvar npmjs-history-dependencies nil)
+
+(defun npmjs-run-nvm-command (cb &rest args)
+  "Execute a NVM command with ARGS in the default directory.
+
+- Argument CB is a function that will be called when the command is finished.
+- Optional argument ARGS is a list of additional arguments to pass to the `nvm'
+  command."
+  (npmjs-exec-in-dir (string-join
+                      (append (delq nil (list "source" (npmjs-nvm-path)
+                                              "&&"))
+                              args)
+                      "\s")
+                     default-directory
+                     (lambda (&rest output)
+                       (print output)
+                       (when cb
+                         (funcall cb)))))
 
 (defun npmjs-compile-global (npm-command)
   "Generic compile command for NPM-COMMAND with ARGS functionality."
@@ -1259,6 +1308,121 @@ Also show message when STATE changed."
     (npmjs-dependencies-get-ivy-map)
     (current-local-map))))
 
+(defvar url-http-end-of-headers)
+
+(defun npmjs-abort-url-retrieve (buff)
+  "Cancel the URL retrieval process and kill the associated buffer.
+
+Argument BUFF is a buffer object that represents the buffer to be checked and
+potentially killed."
+  (when (buffer-live-p buff)
+    (let ((proc (get-buffer-process buff)))
+      (when proc
+        (delete-process proc))
+      (kill-buffer buff))))
+
+(defvar npmjs-packages-data (make-hash-table :test 'equal))
+(defvar npmjs-packages-last-input nil)
+(defun npmjs-parse-search-response (str)
+  (let* ((data (npmjs-json-parse-string str
+                                        'alist
+                                        'list))
+         (objects (alist-get 'objects data)))
+    (dolist (it objects)
+      (let* ((info (alist-get 'package it))
+             (key (alist-get 'name info)))
+        (puthash key info npmjs-packages-data)))))
+
+(defun npmjs--run-in-buffer (buffer timer-sym fn &rest args)
+  "Run a function FN in a BUFFER and cancel timer TIMER-SYM.
+
+Argument TIMER-SYM is a symbol that represents a timer.
+Argument BUFFER is the buffer in which the function/macro will be executed.
+Argument FN is the function or macro that will be executed.
+Argument ARGS is a list of additional arguments that will be passed to the FN."
+  (when (and buffer (buffer-live-p buffer))
+    (with-current-buffer buffer
+      (let ((buffer-window (get-buffer-window buffer)))
+        (if (and buffer-window
+                 (not (eq (selected-window) buffer-window)))
+            (with-selected-window buffer-window
+              (apply fn args))
+          (apply fn args)))
+      (when-let ((timer-value (symbol-value timer-sym)))
+        (when (timerp timer-value)
+          (cancel-timer timer-value))))))
+(defun npmjs-cancel-timer (timer-sym)
+  "Cancel a timer if it exists and set the value of TIMER-SYM to nil.
+
+Argument TIMER-SYM is a symbol that represents the timer to be canceled."
+  (let ((timer-value (symbol-value timer-sym)))
+    (when (timerp timer-value)
+      (cancel-timer timer-value)
+      (set timer-sym nil))))
+
+(defun npmjs-debounce (timer-sym delay fn &rest args)
+  "Debounce execution FN with ARGS for DELAY.
+TIMER-SYM is a symbol to use as a timer."
+  (let ((timer-value (symbol-value timer-sym)))
+    (when (timerp timer-value)
+      (cancel-timer timer-value)))
+  (set timer-sym (apply #'run-with-timer delay nil
+                        #'npmjs--run-in-buffer
+                        (current-buffer)
+                        timer-sym
+                        fn
+                        args)))
+
+(defvar npmjs-request-buffer nil)
+(defvar npmjs-registry-timer nil)
+
+(defun npmjs-wnd-complete ()
+  (npmjs-abort-url-retrieve npmjs-request-buffer)
+  (when-let ((wnd (active-minibuffer-window)))
+    (with-selected-window wnd
+    ;; (completion--flush-all-sorted-completions)
+      (let ((text (string-trim (buffer-substring-no-properties
+                                (minibuffer-prompt-end)
+                                (line-end-position)))))
+        (unless (string-empty-p text)
+          (setq npmjs-request-buffer
+                (url-retrieve
+                 (format
+                  "https://registry.npmjs.org/-/v1/search?%s"
+                  (url-build-query-string
+                   `(("text"
+                      ,text))))
+                 (lambda (status &rest _)
+                   (cond ((plist-get status
+                                     :error))
+                         (t
+                          (when url-http-end-of-headers
+                            (npmjs-parse-search-response
+                             (buffer-substring-no-properties
+                              url-http-end-of-headers
+                              (point-max)))
+                            (when (window-live-p wnd)
+                              (npmjs-debounce
+                               'npmjs-registry-timer 2
+                               (lambda ()
+                                 (when (minibuffer-window-active-p (selected-window))
+                                   (unwind-protect
+                                       (progn (setq deactivate-mark nil)
+                                              (throw 'exit nil))
+                                     (run-with-timer 0.5 nil 'npmjs-search-native text)))))))))))))))))
+
+(defun npmjs-search-native (&optional input)
+  (interactive)
+  (minibuffer-with-setup-hook
+      (lambda ()
+        (when (minibufferp)
+          (add-hook 'post-self-insert-hook 'npmjs-wnd-complete nil t)))
+    (completing-read
+     "Package "
+     (completion-table-dynamic (lambda (_text)
+                                 (hash-table-keys npmjs-packages-data)))
+     nil nil input)))
+
 ;;;###autoload
 (defun npmjs-ivy-read-npm-dependency (&optional prompt initial-input history)
   "Call the npm search shell command with PROMPT, INITIAL-INPUT, and HISTORY.
@@ -1276,11 +1440,10 @@ INITIAL-INPUT can be given as the initial minibuffer input."
           (progn
             (add-hook 'minibuffer-setup-hook #'npmjs-ivy-minibuffer-setup
                       t)
-            (let
-                ((cmd-str
-                  (if (ignore-errors (npmjs-online-p))
-                      "npm search --no-color --parseable "
-                    "npm search --prefer-offline --no-color --parseable ")))
+            (let* ((cmd-str
+                    (if (ignore-errors (npmjs-online-p))
+                        "npm search --no-color --parseable "
+                      "npm search --prefer-offline --no-color --parseable ")))
               (ivy-read
                (concat (string-trim (or prompt "Repo:")) " ")
                (lambda (str)
@@ -1643,6 +1806,91 @@ represent a JSON false value.  It defaults to `:false'."
           (json-null (or null-object :null))
           (json-false (or false-object :false)))
       (json-read-from-string str))))
+
+(declare-function json-read "json")
+(defun npmjs-json-read-buffer (&optional object-type array-type null-object
+                                         false-object)
+  "Parse json from the current buffer using specified object and array types.
+
+The argument OBJECT-TYPE specifies which Lisp type is used
+to represent objects; it can be `hash-table', `alist' or `plist'.  It
+defaults to `alist'.
+
+The argument ARRAY-TYPE specifies which Lisp type is used
+to represent arrays; `array'/`vector' and `list'.
+
+The argument NULL-OBJECT specifies which object to use
+to represent a JSON null value.  It defaults to `:null'.
+
+The argument FALSE-OBJECT specifies which object to use to
+represent a JSON false value.  It defaults to `:false'."
+  (if (and (fboundp 'json-parse-string)
+           (fboundp 'json-available-p)
+           (json-available-p))
+      (json-parse-buffer
+       :object-type (or object-type 'alist)
+       :array-type
+       (pcase array-type
+         ('list 'list)
+         ('vector 'array)
+         (_ 'array))
+       :null-object (or null-object :null)
+       :false-object (or false-object :false))
+    (let ((json-object-type (or object-type 'alist))
+          (json-array-type
+           (pcase array-type
+             ('list 'list)
+             ('array 'vector)
+             (_ 'vector)))
+          (json-null (or null-object :null))
+          (json-false (or false-object :false)))
+      (json-read))))
+
+(declare-function json-read "json")
+
+(defun npmjs-json-read-file (file &optional object-type array-type null-object
+                                  false-object)
+  "Parse FILE with natively compiled function or with json library.
+
+The argument OBJECT-TYPE specifies which Lisp type is used
+to represent objects; it can be `hash-table', `alist' or `plist'.  It
+defaults to `alist'.
+
+The argument ARRAY-TYPE specifies which Lisp type is used
+to represent arrays; `array'/`vector' and `list'.
+
+The argument NULL-OBJECT specifies which object to use
+to represent a JSON null value.  It defaults to `:null'.
+
+The argument FALSE-OBJECT specifies which object to use to
+represent a JSON false value.  It defaults to `:false'."
+  (if (and (fboundp 'json-parse-string)
+           (fboundp 'json-available-p)
+           (json-available-p))
+      (with-temp-buffer (insert-file-contents file)
+                        (goto-char (point-min))
+                        (json-parse-buffer
+                         :object-type (or object-type 'alist)
+                         :array-type
+                         (pcase array-type
+                           ('list 'list)
+                           ('vector 'array)
+                           (_ 'array))
+                         :null-object (or null-object :null)
+                         :false-object (or false-object :false)))
+    (with-temp-buffer
+      (require 'json)
+      (insert-file-contents file)
+      (goto-char (point-min))
+      (let ((json-object-type (or object-type 'alist))
+            (json-array-type
+             (pcase array-type
+               ('list 'list)
+               ('array 'vector)
+               (_ 'vector)))
+            (json-null (or null-object :null))
+            (json-false (or false-object :false)))
+        (json-read)))))
 
 (defun npmjs-parse-json-from-output (cmd &rest args)
   "Execute CMD with ARGS synchronously and parse json output."
@@ -2200,26 +2448,30 @@ The final list of key strategies is returned."
               -2)
              ((member it vars)
               -1)
-             (t (length (npmjs-key-builder-shared-start word it)))))
+             (t (length (npmjs-key-builder-shared-start (downcase word)
+                                                        (downcase it))))))
      #'>
-     (seq-uniq (append
-                vars
-                (npmjs-key-splitted-variants word len "^[a-z]")
-                (mapcar
-                 (lambda (n)
-                   (funcall finalize (mapconcat
-                                      (apply-partially
-                                       #'npmjs-key-builder-safe-substring n)
-                                      parts "")))
-                 (number-sequence 1 (min len parts-len)))
-                (npmjs-key-splitted-variants word len "")
-                (mapcar
-                 (lambda (n)
-                   (funcall finalize (mapconcat
-                                      (apply-partially
-                                       #'npmjs-key-builder-safe-substring n)
-                                      (reverse parts) "")))
-                 (number-sequence 1 (min len parts-len))))))))
+     (seq-uniq (delq nil
+                     (append
+                      vars
+                      (npmjs-key-splitted-variants word len "^[a-z]")
+                      (mapcar
+                       (lambda (n)
+                         (funcall finalize (mapconcat
+                                            (apply-partially
+                                             #'npmjs-key-builder-safe-substring
+                                             n)
+                                            parts "")))
+                       (number-sequence 1 (min len parts-len)))
+                      (npmjs-key-splitted-variants word len "")
+                      (mapcar
+                       (lambda (n)
+                         (funcall finalize (mapconcat
+                                            (apply-partially
+                                             #'npmjs-key-builder-safe-substring
+                                             n)
+                                            (reverse parts) "")))
+                       (number-sequence 1 (min len parts-len)))))))))
 
 
 
@@ -2556,7 +2808,7 @@ and for WIN-WIDTH - window width."
                (npmjs-make-command-name "npm" name))))
         (npmjs-confirm-and-run cmd args)))))
 
-;;;###autoload (autoload 'npmjs-show-args "npmjs.el" nil t)
+;;;###autoload (autoload 'npmjs-show-args "npmjs" nil t)
 (transient-define-suffix npmjs-show-args ()
   :transient t
   (interactive)
@@ -4474,7 +4726,7 @@ USED-KEYS is a list of keys that shouldn't be used."
                                        (npmjs-get-arguments))))))))))
 
 
-;;;###autoload (autoload 'npmjs-install "npmjs.el" nil t)
+;;;###autoload (autoload 'npmjs-install "npmjs" nil t)
 (transient-define-prefix npmjs-install ()
   "Run arbitrary package scripts."
   :value (lambda ()
@@ -4580,12 +4832,18 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                      ,(format "Run script %s in %s." script dir)
                      (interactive)
                      (let ((default-directory ,dir))
-                       (npmjs-run-compile
-                        (npmjs-confirm-command
-                         "npm"
-                         "run-script"
-                         ,script
-                         (npmjs-get-formatted-transient-args))))))
+                       (if npmjs-use-comint-in-scripts
+                           (npmjs-confirm-and-run
+                            "npm"
+                            "run-script"
+                            ,script
+                            (npmjs-get-formatted-transient-args))
+                         (npmjs-run-compile
+                          (npmjs-confirm-command
+                           "npm"
+                           "run-script"
+                           ,script
+                           (npmjs-get-formatted-transient-args)))))))
          (list key name :description `(lambda ()
                                         (concat
                                          ,script
@@ -4600,7 +4858,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
 (defvar-local npmjs-current-scripts nil)
 
 
-;;;###autoload (autoload 'npmjs-run-script "npmjs.el" nil t)
+;;;###autoload (autoload 'npmjs-run-script "npmjs" nil t)
 (transient-define-prefix npmjs-run-script ()
   "Run arbitrary package scripts."
   :show-help (lambda (&rest _)
@@ -4756,7 +5014,7 @@ update the descriptions alist accordingly. Return the current npm version."
                  prefix-symb))))
      (transient-setup command))))
 
-;;;###autoload (autoload 'npmjs-nvm "npmjs.el" nil t)
+;;;###autoload (autoload 'npmjs-nvm "npmjs" nil t)
 (transient-define-prefix npmjs-nvm ()
   "Menu for Node Version Manager (nvm) commands."
   ["Node Version Manager (nvm)"
