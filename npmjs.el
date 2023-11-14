@@ -461,7 +461,7 @@ If DIRECTORY is nil or missing, the current buffer's value of
       file)))
 
 (defun npmjs-nvm--installed-versions-dirs ()
-  "Return list of directories with installed versions of node."
+  "List installed Node.js versions and their directories."
   (let* ((files (mapcan
                  (lambda (versions-dir)
                    (directory-files versions-dir t
@@ -487,7 +487,7 @@ If DIRECTORY is nil or missing, the current buffer's value of
      files)))
 
 (defun npmjs-nvm--installed-versions ()
-  "Return list of directories with installed versions of node."
+  "List installed Node.js versions."
   (mapcar (lambda (it)
             (cons (file-name-nondirectory it) it))
           (npmjs-nvm--installed-versions-dirs)))
@@ -584,7 +584,10 @@ Return a cons cell with version and absolute path."
     (cons choice (cdr (assoc choice alist)))))
 
 (defun npmjs-nvm-get-env-vars (version)
-  "Return alist of new environment for node VERSION."
+  "Set Node.js version-specific environment variables.
+
+Argument VERSION is a string representing the Node.js VERSION to get environment
+variables for."
   (when-let ((version-path (cdr (npmjs-nvm-find-exact-version-for version))))
     (let* ((env-flags
             (mapcar
@@ -780,13 +783,14 @@ If ALL, read all installed versions."
 
 ;;;###autoload
 (defun npmjs-nvm-alias (version)
-  "Modify environment variables to use VERSION of node."
+  "Set Node.js VERSION as default and use it.
+
+Argument VERSION is a string representing the Node.js version to set as the
+default alias."
   (interactive (list (npmjs-confirm-node-version t)))
   (let ((vars (npmjs-nvm-get-env-vars version)))
-    (dolist (elem vars)
-      (setenv
-       (car elem)
-       (cadr elem)))
+    (pcase-dolist (`(,var ,value) vars)
+      (setenv var value))
     (npmjs-run-nvm-command
      nil
      "nvm" "alias" "default" version "&&" "nvm" "use" "default")))
@@ -947,8 +951,7 @@ Invoke CALLBACK without args."
         (set-process-filter proc #'comint-output-filter)))))
 
 (defun npmjs-get-workspaces ()
-  "Look up directory hierarchy for directories containing package.json.
-Return list of project roots."
+  "List workspace directories from a project's package.json."
   (when-let* ((proj-root (car (npmjs-get-project-roots)))
               (package-json-root (npmjs-read-json (expand-file-name
                                                    "package.json" proj-root)
@@ -1032,7 +1035,10 @@ Return list of project roots."
                          (funcall cb)))))
 
 (defun npmjs-compile-global (npm-command)
-  "Generic compile command for NPM-COMMAND with ARGS functionality."
+  "Run global NPM command with Node version check.
+
+Argument NPM-COMMAND is a string representing the npm command to execute
+globally."
   (if-let ((nvm-version (npmjs-confirm-node-version)))
       (let ((env (npmjs-nvm-get-env-for-node
                   nvm-version))
@@ -1225,21 +1231,21 @@ With a prefix ARG, allow editing."
            (file-name-nondirectory (directory-file-name name))))))
 
 (defun npmjs--get-global-buffer-name ()
-  "Get a create a suitable compilation buffer."
+  "Retrieve formatted global buffer name with current Node version."
   (format "npmjs<global><%s>" npmjs--current-node-version))
 
 (defun npmjs--get-project-buffer-name ()
-  "Get a create a suitable compilation buffer."
+  "Retrieve and format the current project's buffer name."
   (when-let ((name (npmjs-get-project-root)))
     (format "npmjs<%s>" (replace-regexp-in-string "^~/\\|/$" "" name))))
 
 (defun npmjs-get-project-default-directory ()
-  "Get a create a suitable compilation buffer."
+  "Retrieve the expanded path of a project's root directory."
   (when-let ((name (npmjs-get-project-root)))
     (expand-file-name name)))
 
 (defun npmjs--get-buffer ()
-  "Get a create a suitable compilation buffer."
+  "Retrieve or create a buffer for `npmjs-mode'."
   (if (eq major-mode 'npmjs-mode)
       (current-buffer)
     (get-buffer-create
@@ -1325,6 +1331,12 @@ potentially killed."
 (defvar npmjs-packages-data (make-hash-table :test 'equal))
 (defvar npmjs-packages-last-input nil)
 (defun npmjs-parse-search-response (str)
+  "Parse and store npm package data from JSON.
+
+Argument STR is a string containing the JSON response from the npmjs search API.
+
+Populate the hash table `npmjs-packages-data' with package information from the
+parsed JSON string STR."
   (let* ((data (npmjs-json-parse-string str
                                         'alist
                                         'list))
@@ -1378,6 +1390,10 @@ TIMER-SYM is a symbol to use as a timer."
 (defvar npmjs-registry-timer nil)
 
 (defun npmjs-wnd-complete ()
+  "Fetch and autocomplete npm package names.
+
+Display a list of npm package names for completion based on the user's input in
+the minibuffer."
   (npmjs-abort-url-retrieve npmjs-request-buffer)
   (when-let ((wnd (active-minibuffer-window)))
     (with-selected-window wnd
@@ -1413,6 +1429,12 @@ TIMER-SYM is a symbol to use as a timer."
                                      (run-with-timer 0.5 nil 'npmjs-search-native text)))))))))))))))))
 
 (defun npmjs-search-native (&optional input)
+  "Search npm packages interactively.
+
+Optional argument INPUT is the initial input for the search.
+
+Choose a package from a dynamically generated list of npm package names based on
+user input."
   (interactive)
   (minibuffer-with-setup-hook
       (lambda ()
@@ -1579,7 +1601,9 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
         (fit-window-to-buffer nil 28 28 nil nil t)))))
 
 (defun npmjs-search-package--forward-line-0 (&optional n)
-  "Forward N lines in buffer `npmjs-bmenu-search-buff-name'."
+  "Navigate lines in npmjs search results, handling boundaries.
+
+Optional argument N is the number of lines to move forward; it defaults to 1."
   (let* ((id (tabulated-list-get-id))
          (new-id (progn (forward-line n)
                         (tabulated-list-get-id))))
@@ -1610,12 +1634,12 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
   (npmjs-search-package--forward-line 1))
 
 (defun npmjs-search-package--prev-line ()
-  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  "Navigate to the previous line in npmjs search results."
   (interactive)
   (npmjs-search-package--forward-line -1))
 
 (defun npmjs-search-package--beg-of-buffer ()
-  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  "Jump to the start of the npmjs search results buffer."
   (interactive)
   (when-let ((wind (get-buffer-window npmjs-bmenu-search-buff-name)))
     (with-selected-window wind
@@ -1625,7 +1649,7 @@ The third arg HISTORY, if non-nil, specifies a history list and optionally the
         (npmjs-search-highlight-current)))))
 
 (defun npmjs-search-package--end-of-buffer ()
-  "Previous line in buffer `npmjs-bmenu-search-buff-name'."
+  "Navigate to and highlight the last entry in the npmjs search buffer."
   (interactive)
   (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
       (progn
@@ -1984,7 +2008,7 @@ Otherwise, it recursively searches for package files in all subdirectories and
      (npmjs-get-package-files node-modules-path))))
 
 (defun npmjs-global-package-completion-table ()
-  "Read globally installed js packages."
+  "List npm global packages for completion."
   (let* ((alist (ignore-errors (npmjs-global-packages)))
          (annotf (lambda (it)
                    (let ((value (cdr-safe (assoc it alist))))
@@ -2073,7 +2097,10 @@ Otherwise, it recursively searches for package files in all subdirectories and
               '()))
 
 (defun npmjs-get-package-dist-tags (package)
-  "Exec \"npm view\" for PACKAGE and return alist."
+  "Fetch distribution tags for an NPM package.
+
+Argument PACKAGE is the name of the npm package to retrieve distribution tags
+for."
   (let ((data (npmjs-get-package-info package)))
     (mapcar #'car (alist-get 'dist-tags data))))
 
@@ -2653,7 +2680,10 @@ and the special characters @ and punctuation mark"
     (car item)))
 
 (defun npmjs-make-command-name (&rest args)
-  "Make name from ARGS."
+  "Generate a command name by concatenating arguments.
+
+Remaining arguments ARGS are strings that will be concatenated to form the
+command name after being unquoted and trimmed."
   (let ((name (mapconcat (npmjs--compose
                            string-trim
                            (apply-partially #'format "%s"))
@@ -3086,8 +3116,10 @@ If MULTI-VALUE is non nil, return list of packages, othervise string."
         (mapcar transformer deps)))))
 
 (defun npmjs-make-npm-package-reader-with-version (&optional multi-value)
-  "Create minibuffer reader for packages from npm registry with version.
-If MULTI-VALUE is non nil, return list of packages, othervise string."
+  "Create reader for npm package versions.
+
+Optional argument MULTI-VALUE is a boolean indicating whether to allow multiple
+values; it defaults to nil."
   (npmjs-make-combined-package-reader #'npmjs-read-new-dependency
                                       #'npmjs-confirm-package-version
                                       multi-value))
@@ -3204,8 +3236,12 @@ PROMPT INITIAL-INPUT HISTORY is the same as for completing read."
     (file-relative-name filename default-directory)))
 
 (defun npmjs-read-pkg-directory (&optional prompt &rest _)
-  "Read file with .tar, .tar.gz, or .tgz extension.
-If PROMPT is non nil, use this prompt."
+  "Read and return a local directory path.
+
+Optional argument PROMPT is the string used to prompt the user for a directory.
+It defaults to \"Directory file: \".
+
+Remaining arguments _ are ignored and not used within the function."
   (npmjs-file-name-relative
    (file-local-name
     (read-directory-name (or prompt "Directory file: ")))))
@@ -3255,8 +3291,8 @@ If PROMPT is non nil, use this prompt."
                          (npmjs-get-package-json-alist)))
                 (mapcar
                  (npmjs--compose
-                   symbol-name
-                   car)
+                  symbol-name
+                  car)
                  (npmjs-get-npm-config))))))))))
 
 (defvar npmjs-all-known-hints nil)
@@ -4705,7 +4741,7 @@ USED-KEYS is a list of keys that shouldn't be used."
   :reader #'npmjs-read-tar-file)
 
 (transient-define-argument npmjs-install-pkg-directory ()
-  "Argument for installing tarbal file."
+  "Set npm install target directory."
   :class 'transient-option
   :argument "<directory>"
   :prompt "Directory:"
@@ -4741,7 +4777,7 @@ USED-KEYS is a list of keys that shouldn't be used."
 
 ;;;###autoload (autoload 'npmjs-install "npmjs" nil t)
 (transient-define-prefix npmjs-install ()
-  "Run arbitrary package scripts."
+  "Install Node.js packages using npm."
   :value (lambda ()
            (unless (npmjs-get-project-root)
              (list "--global")))
@@ -4776,16 +4812,16 @@ USED-KEYS is a list of keys that shouldn't be used."
              (options (append
                        (seq-remove
                         (npmjs--compose
-                         (npmjs--cond
-                          [stringp (apply-partially #'string= "--global")]
-                          [listp
-                           (apply-partially
-                            #'seq-find
-                            (npmjs--or
-                             (apply-partially #'string=
-                                              "--global")
-                             (apply-partially #'string= "-")))])
-                         (apply-partially #'npmjs-nth 2))
+                          (npmjs--cond
+                            [stringp (apply-partially #'string= "--global")]
+                            [listp
+                             (apply-partially
+                              #'seq-find
+                              (npmjs--or
+                               (apply-partially #'string=
+                                                "--global")
+                               (apply-partially #'string= "-")))])
+                          (apply-partially #'npmjs-nth 2))
                         (npmjs-add-options-shortcuts
                          (plist-get props
                                     :options)
