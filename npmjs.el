@@ -650,15 +650,16 @@ If ALL, read all installed versions."
           (npmjs-nvm-get-nvmrc-required-node-version))
          (curr-node npmjs--current-node-version)
          (cands
-          (mapcar #'npmjs-nvm-strip-prefix
-                  (append
-                   (delq nil
-                         (list
-                          default-global
-                          current-global
-                          project-node
-                          curr-node))
-                   installed)))
+          (seq-uniq
+           (mapcar #'npmjs-nvm-strip-prefix
+                   (append
+                    (delq nil
+                          (list
+                           default-global
+                           current-global
+                           project-node
+                           curr-node))
+                    installed))))
          (annotf (lambda (it)
                    (cond ((equal it default-global)
                           " System Global")
