@@ -2692,7 +2692,7 @@ and the special characters @ and punctuation mark"
     (insert
      str)
     (goto-char (point-min))
-    (while (re-search-forward "[@./=]?\\(<\\([a-z0-9-/@][^>]+\\)[>][\s./=]?\\)+"
+    (while (re-search-forward "[@./=]?\\(<\\([a-z0-9/@-][^>]+\\)[>][\s./=]?\\)+"
                               nil t 1)
       (replace-match ""))
     (buffer-string)))
@@ -3232,7 +3232,7 @@ If PROMPT is non nil, use this prompt."
   (let ((found))
     (with-temp-buffer
       (insert str)
-      (while (re-search-backward "^@[a-z-0-9]+" nil t 1)
+      (while (re-search-backward "^@[a-z0-9_-]+" nil t 1)
         (push (match-string-no-properties 0) found)))
     found))
 
@@ -3242,10 +3242,10 @@ If PROMPT is non nil, use this prompt."
    (flatten-list
     (mapcar
      (npmjs--compose
-       npmjs-get-scope-matches
-       substring-no-properties)
+      npmjs-get-scope-matches
+      substring-no-properties)
      (seq-filter
-      (apply-partially #'string-match-p "^@[a-z-0-9]+")
+      (apply-partially #'string-match-p "^@[a-z0-9_-]+")
       (append
        kill-ring
        (remove nil
@@ -3606,7 +3606,7 @@ Normalize multi-value arguments and parse hints."
                 ((guard
                   (and
                    (not value)
-                   (string-match-p "^[a-z-0-9]+=\\([a-z-0-9]+|[a-z-0-9|]+\\)$"
+                   (string-match-p "^[a-z0-9-]+=\\([a-z0-9-]+|[a-z0-9|-]+\\)$"
                                    curr)))
                  (let* ((parts (split-string curr "=" t))
                         (arg (pop parts))
@@ -4013,8 +4013,9 @@ This function is for debug purposes."
     (concat long " ")))
 (defun npmjs-short-long-option-p (str)
   "Return non nil if STR has short and long option."
-  (string-match-p "^\\(-\\([a-z]+\\)\\)[|]\\(--\\([a-z-0-9-]+\\)\\)$"
+  (string-match-p "^\\(-\\([a-z]+\\)\\)[|]\\(--\\([a-z0-9-]+\\)\\)$"
                   str))
+
 (defun npmjs-get-long-short-option (str)
   "Split STR to list of long and short option."
   (if (npmjs-short-long-option-p str)
@@ -4080,22 +4081,43 @@ If not, just return VECT."
                           it)))))
                 lines)
    "\n"))
+
 (defun npmjs-map-descriptions-lines (alist &optional inhibit-eval)
   "Map ALIST of commands and arguments.
 If INHIBIT-EVAL is non nil, don't eval infixes."
   (mapcar (lambda (it)
             (npmjs-map-command-cell-lines it inhibit-eval))
           alist))
+
 (defun npmjs-single-value-to-hint (str)
   "Replace single value in argument STR with hint.
 For example, --registry=url to --registry=<url>."
   (with-temp-buffer
     (insert str)
     (while (re-search-backward
-            "--\\([a-z-0-9@]+\\)=\\([a-z-0-9@]+\\)" nil t 1)
+            "--\\([a-z0-9@-]+\\)=\\([a-z0-9@-]+\\)" nil t 1)
       (let ((value (match-string-no-properties 2)))
         (replace-match (concat "<" value ">") nil nil nil 2)))
     (buffer-string)))
+
+
+
+
+(defun npmjs-combine-matched-tags-in-string (curr)
+  "Combine adjacent HTML like tags in a string.
+
+Argument CURR is a string to be processed for matching tags."
+  (let ((re "\\[?\\(<[a-z][^>]+>\\) ?\\[?\\(<[a-z][^>]+>\\)\\]?"))
+    (when (string-match-p re curr)
+      (setq curr (with-temp-buffer (insert curr)
+                                   (goto-char (point-min))
+                                   (when (re-search-forward re
+                                                            nil t 1)
+                                     (let ((a (match-string-no-properties 1))
+                                           (b (match-string-no-properties 2)))
+                                       (replace-match (concat a " " b))))
+                                   (buffer-string))))))
+
 (defun npmjs-prenormalize-line (curr)
   "Cleanup string CURR."
   (setq curr (replace-regexp-in-string "[(]same as[ ][^)]+)" "" curr))
@@ -4108,17 +4130,7 @@ For example, --registry=url to --registry=<url>."
   (setq curr (replace-regexp-in-string "<pkg>\\[@<version>\\]"
                                        "[<pkg>@<version>]"
                                        curr))
-  (when (string-match-p
-         "\\[?\\(<[a-z][^>]+>\\)[ ]\\[?\\(<[a-z][^>]+>\\)\\]?\\]?+" curr)
-    (setq curr (with-temp-buffer (insert curr)
-                                 (goto-char (point-min))
-                                 (when (re-search-forward
-                                        "\\[?\\(<[a-z][^>]+>\\)[ ]\\[?\\(<[a-z][^>]+>\\)\\]?\\]?+"
-                                        nil t 1)
-                                   (let ((a (match-string-no-properties 1))
-                                         (b (match-string-no-properties 2)))
-                                     (replace-match (concat a " " b))))
-                                 (buffer-string))))
+  (npmjs-combine-matched-tags-in-string curr)
   (npmjs-single-value-to-hint curr))
 
 (defun npmjs-parse-normalized-vectors (cmd inhibit-eval vectors)
