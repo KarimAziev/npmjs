@@ -5152,8 +5152,8 @@ calls `npmjs-show-manual' with the value of the command's
 
 (defvar npmjs-options-suffixes
   '(("RET" "Run" npmjs-done)
-    ("C-c C-a" "Show arguments" npmjs-show-args))Key bindings and descriptions
-for npmjs command options.)
+    ("C-c C-a" "Show arguments" npmjs-show-args))
+  "Key bindings and descriptions for npmjs command options.")
 
 
 (defun npmjs-map-commands (commands)
