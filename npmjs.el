@@ -519,7 +519,6 @@ to the npm command."
   "v[0-9]+\\.[0-9]+\\.[0-9]+"
   "Regex matching a Node version.")
 
-
 (defmacro npmjs-nvm-with-current-node-version (&rest body)
   "Set environment variables and run BODY with Node.js version.
 
@@ -1107,7 +1106,6 @@ the package.json."
   (alist-get script
              (npmjs-get-package-json-scripts)))
 
-
 (defun npmjs-exec-in-dir (command &optional directory callback)
   "Execute NPM COMMAND in specified directory.
 
@@ -1538,7 +1536,6 @@ called."
                 #'npmjs-throw-done)
     map)
   "Keymap used in `npmjs-multi-completing-read-annotated'.")
-
 
 (defun npmjs-dependencies-get-ivy-map ()
   "Create key bindings for npmjs Ivy actions."
@@ -4547,12 +4544,14 @@ available."
                (not force))
     (npmjs--get-all-npm-versions-descriptions-alist))
   (npmjs-pp npmjs-all-descriptions-alist))
+
 (defun npmjs-upcased-p (str)
   "Check if string starts with an uppercase letter.
 
 Argument STR is the string to be checked for an uppercase start."
   (let ((case-fold-search nil))
     (string-match-p "^[A-Z]" str)))
+
 (defun npmjs-get-list-item-if-one (item)
   "Retrieve single element from list or vector, else return item.
 
@@ -4566,6 +4565,7 @@ one element to return that element, otherwise ITEM is returned as is."
          (npmjs-nth
           0 item))
         (t item)))
+
 (defun npmjs-ensure-option-ending (long)
   "Ensure option ends with space or equals.
 
@@ -4579,6 +4579,7 @@ Ensure the returned string LONG ends with a space unless it already ends with
           (string-suffix-p " " long))
       long
     (concat long " ")))
+
 (defun npmjs-short-long-option-p (str)
   "Check if string matches short and long option pattern.
 
@@ -4595,6 +4596,7 @@ long and short version separated by a pipe character \"|\"."
   (if (npmjs-short-long-option-p str)
       (reverse (split-string str "|" t))
     nil))
+
 (defun npmjs-flatten-vectors (item)
   "Flatten nested vectors into a single vector.
 
@@ -4610,6 +4612,7 @@ Argument ITEM is a vector that will be flattened."
                                (_ (vconcat acc (vector it))))))
                      item
                      []))))
+
 (defun npmjs-multi-extract-vector (vect)
   "Extract nested vector if first elements match, else return original.
 
@@ -4621,6 +4624,7 @@ Argument VECT is a vector that may contain subvectors."
                   (npmjs-nth 0 vect))
        subvect))
    vect))
+
 (defun npmjs-normalize-vectors (vect)
   "Normalize and flatten vector data.
 
@@ -4643,6 +4647,7 @@ with special handling of the \"|\" character."
                             (append (list (string-join left ""))
                                     right)))
         res))))
+
 (defun npmjs-make-command-doc (cmd lines)
   "Generate documentation for npm commands.
 
@@ -4693,9 +4698,6 @@ Argument STR is a string containing the text to process."
       (let ((value (match-string-no-properties 2)))
         (replace-match (concat "<" value ">") nil nil nil 2)))
     (buffer-string)))
-
-
-
 
 (defun npmjs-combine-matched-tags-in-string (curr)
   "Combine adjacent HTML tags in a string.
@@ -4823,7 +4825,6 @@ input sequence."
                  acc))
               (_ (message "unknown type %s: " it)))))
     rawoptions '())))
-
 
 (defun npmjs-map-command-cell-lines (cell &optional inhibit-eval)
   "Parse and map npm command details from text.
@@ -5155,7 +5156,6 @@ calls `npmjs-show-manual' with the value of the command's
     ("C-c C-a" "Show arguments" npmjs-show-args))
   "Key bindings and descriptions for npmjs command options.")
 
-
 (defun npmjs-map-commands (commands)
   "Recoursively process a list of COMMANDS and generate key bindings for them.
 
@@ -5389,16 +5389,12 @@ Optional argument HIST is the history list to use for the input."
                     initial-input
                     hist)))
 
-
-
 (transient-define-argument npmjs-project-file-argument ()
   "Argument for installing tarbal file."
   :class 'transient-option
   :argument "<project-file>"
   :prompt "Project file:"
   :reader #'npmjs-read-project-file)
-
-
 
 ;;;###autoload
 (defun npmjs-install-self-globally ()
@@ -5640,7 +5636,6 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                    output
                  (npmjs-parse-columns-to-alist))))
     (cons description spec)))
-
 
 (defun npmjs-setup-npm ()
   "Set up npmjs with the current npm version and descriptions.
