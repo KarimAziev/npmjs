@@ -939,7 +939,7 @@ installation command."
                    (npmjs-nvm-ls-remote "--lts"))
              (prog1 (npmjs-nvm-strip-prefix
                      (npmjs-nvm-read-remote-node-version))))))
-     (list targs version)))
+     (list version targs)))
   (when-let ((nvm-path (npmjs-nvm-path)))
     (if (member version (mapcar (lambda (it)
                                   (npmjs-nvm-strip-prefix (car it)))
