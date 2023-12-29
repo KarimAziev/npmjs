@@ -970,6 +970,27 @@ installation command."
              (transient-setup transient-current-command))
            (message "Error installing %s" version)))))))
 
+(defun npmjs--write-nvm-file (version)
+  "Create or update the `.nvmrc' file with the given VERSION.
+
+Argument VERSION is a string representing the Node.js version to write into the
+.nvmrc file."
+  (when-let* ((dir (or
+                    (locate-dominating-file default-directory ".nvmrc")
+                    (car (npmjs-get-project-roots))))
+              (file (expand-file-name ".nvmrc" dir)))
+    (when (yes-or-no-p (format "Write to %s?" file))
+      (write-region (npmjs-nvm-strip-prefix version) nil file nil nil nil nil))))
+
+;;;###autoload
+(defun npmjs-write-nvm-file (version)
+  "Create or update the `.nvmrc' file with selected Node.js VERSION.
+
+Argument VERSION is a string representing the Node.js version to write into the
+.nvmrc file."
+  (interactive (list (npmjs-confirm-node-version)))
+  (npmjs--write-nvm-file version))
+
 (defvar npmjs-installing-nvm nil)
 
 (defun npmjs--install-nvm (tag)
@@ -6118,7 +6139,23 @@ update the descriptions alist accordingly. Return the current npm version."
     ("f" "Jump to installed node"
      npmjs-nvm-jump-to-installed-node :inapt-if-not npmjs-nvm-path)
     ("d" "set default node version " npmjs-nvm-alias :inapt-if-not
-     npmjs-nvm-path)]
+     npmjs-nvm-path)
+    ("w" npmjs-write-nvm-file
+     :description (lambda ()
+                    (concat
+                     "Write current node version to .nvmrc "
+                     (if-let ((dir (or
+                                    (locate-dominating-file default-directory
+                                                            ".nvmrc")
+                                    (car (npmjs-get-project-roots)))))
+                         (concat "in " (abbreviate-file-name (expand-file-name
+                                                              ".nvrmc" dir)))
+                       "")))
+     :inapt-if-not (lambda ()
+                     (or
+                      (locate-dominating-file
+                       default-directory ".nvmrc")
+                      (car (npmjs-get-project-roots)))))]
    [("N" npmjs-install-nvm :description (lambda ()
                                           (if (npmjs-nvm-path)
                                               "Update nvm"
