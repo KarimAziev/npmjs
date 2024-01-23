@@ -5799,24 +5799,32 @@ Optional argument HIST is the history list to use for the input."
                                (assoc-string
                                 "install"
                                 (cdr npmjs-current-descriptions-alist)))))))
-             (options (append
-                       (seq-remove
-                        (npmjs--compose
-                          (npmjs--cond
-                            [stringp (apply-partially #'string= "--global")]
-                            [listp
-                             (apply-partially
-                              #'seq-find
-                              (npmjs--or
-                               (apply-partially #'string=
-                                                "--global")
-                               (apply-partially #'string= "-")))])
-                          (apply-partially #'npmjs-nth 2))
-                        (npmjs-add-options-shortcuts
-                         (plist-get props
-                                    :options)
-                         '("p" "g")))
-                       (list '("g" "global" ("-g" "--global"))))))
+             (options
+              (append
+               (seq-remove
+                (npmjs--compose
+                  (npmjs--cond
+                    [stringp (apply-partially #'string= "--global")]
+                    [listp
+                     (apply-partially
+                      #'seq-find
+                      (npmjs--or
+                       (apply-partially #'string=
+                                        "--global")
+                       (apply-partially #'string= "-")))])
+                  (apply-partially #'npmjs-nth 2))
+                (npmjs-add-options-shortcuts
+                 (plist-get props
+                            :options)
+                 '("p" "g")))
+               (list '("g" "global" ("-g" "--global")
+                       :show-help (lambda (&rest _)
+                                    (with-selected-window (npmjs-show-manual
+                                                           "npm-install")
+                                     (goto-char (point-min))
+                                     (re-search-forward
+                                      "^[\s]+\\_<\\(global\\)\\_>"
+                                      nil t 1))))))))
         (mapcar
          (apply-partially #'transient-parse-suffix
                           transient--prefix)
