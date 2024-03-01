@@ -5775,6 +5775,7 @@ Optional argument HIST is the history list to use for the input."
                (npmjs-show-manual "npm-install"))
   [:description
    "Install packages"
+   :class transient-column
    :setup-children
    (lambda (&rest _argsn)
      (mapcar
@@ -5786,6 +5787,7 @@ Optional argument HIST is the history list to use for the input."
         ("-d" "directory" npmjs-install-pkg-directory)
         ("-t" "Install tarball file" npmjs-install-pkg-tarbal-argument))))]
   ["Options"
+   :class transient-column
    :setup-children
    (lambda (&rest _argsn)
      (npmjs-nvm-with-current-node-version
@@ -5919,8 +5921,10 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
    (lambda (&rest _args)
      (mapcar
       (apply-partially #'transient-parse-suffix (oref transient--prefix command))
-      npmjs-current-scripts))]
+      npmjs-current-scripts))
+   :class transient-column]
   ["Options"
+   :class transient-column
    :setup-children
    (lambda (&rest _args)
      (npmjs-nvm-with-current-node-version
