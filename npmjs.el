@@ -5779,7 +5779,7 @@ Optional argument HIST is the history list to use for the input."
    (lambda (&rest _argsn)
      (mapcar
       (apply-partially #'transient-parse-suffix
-                       transient--prefix)
+                       (oref transient--prefix command))
       '(("p" "package" npmjs-install-pkg-argument)
         ("@t" "package@tag" npmjs-install-pkg-tag-argument)
         ("@v" "package@version" npmjs-install-pkg-version-argument)
@@ -5827,7 +5827,7 @@ Optional argument HIST is the history list to use for the input."
                                       nil t 1))))))))
         (mapcar
          (apply-partially #'transient-parse-suffix
-                          transient--prefix)
+                          (oref transient--prefix command))
          options))))]
   ["Actions"
    ("." npmjs-install-self-globally
@@ -5918,7 +5918,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
    :setup-children
    (lambda (&rest _args)
      (mapcar
-      (apply-partially #'transient-parse-suffix transient--prefix)
+      (apply-partially #'transient-parse-suffix (oref transient--prefix command))
       npmjs-current-scripts))]
   ["Options"
    :setup-children
@@ -5937,7 +5937,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                                npmjs-options-suffixes)))
         (mapcar
          (apply-partially #'transient-parse-suffix
-                          transient--prefix)
+                          (oref transient--prefix command))
          children))))]
   ["Help"
    ("-s" "scripts" npmjs-show-scripts-man-page)
