@@ -1852,18 +1852,8 @@ remap those to `npmjs-compile-command' as well."
     map))
 
 ;;;###autoload
-(define-derived-mode npmjs-mode
-  comint-mode "npmjs"
-  "Manage npmjs sessions with read-only prompts.
-
-Define `npmjs-mode', a major mode for interacting with npmjs sessions. This mode
-derives from `comint-mode' and is tailored for running npm (Node Package
-Manager) commands within an Emacs buffer. Set the command prompt to be read-only
-to prevent accidental modifications. Enable line truncation to ensure long lines
-do not wrap and remain readable. Configure the local compile command to use the
-current npm command being executed. Initialize the compilation mode settings to
-integrate with Emacs' compilation facilities, providing features like error
-navigation and output filtering."
+(define-derived-mode npmjs-mode comint-mode "npmjs"
+  "A mode for interacting with npm commands in within a comint buffer."
   (setq-local comint-prompt-read-only nil)
   (setq-local truncate-lines t)
   (setq-local compile-command npmjs--current-command)
