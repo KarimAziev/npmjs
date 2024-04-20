@@ -1695,7 +1695,6 @@ converted to strings and passed as command arguments to NPM-COMMAND."
                   (npmjs-get-project-root)
                   npmjs-last-commands)))
     (when npmjs--current-command
-      ;; existing jest-mode buffer; reuse command
       (setq command npmjs--current-command))
     (unless command
       (user-error "No previous npmjs run for this project"))
