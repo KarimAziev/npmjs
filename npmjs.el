@@ -1818,15 +1818,13 @@ Remaining arguments _ are ignored."
   "The variant of `compilation-mode' used for npmjs compilation buffers."
   (use-local-map compilation-mode-map)
   (setq-local truncate-lines nil)
-  (setq compilation-parse-errors-filename-function #'npmjs-parse-error-filename)
+  (setq-local compilation-parse-errors-filename-function #'npmjs-parse-error-filename)
   (make-local-variable 'compilation-error-regexp-alist)
   (dolist (it npmjs-compilation-error-regexp-alist)
     (add-to-list 'compilation-error-regexp-alist
                  it))
   (add-hook 'after-change-functions 'npmjs--compilation-after-change-watcher nil
-            t)
-  (add-hook 'compilation-filter-hook
-            #'npmjs-compilation-filter-hook nil t))
+            t))
 
 ;;;###autoload
 (define-minor-mode npmjs-minor-mode
