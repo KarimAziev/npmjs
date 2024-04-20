@@ -281,6 +281,28 @@ To change the setting, customize the variable accordingly."
   :type '(boolean)
   :group 'npmjs)
 
+(defcustom npmjs-compilation-error-regexp-alist '(("\\(warning: .*\\)? at \\([^ \n]+\\):\\([0-9]+\\):\\([0-9]+\\)$"
+                                                   2
+                                                   3
+                                                   4
+                                                   (1))
+                                                  ("^\\(?:[ \t]+at \\|==[0-9]+== +\\(?:at\\|b\\(y\\)\\)\\).+(\\([^()\n]+\\):\\([0-9]+\\):\\([0-9]+\\))$"
+                                                   2
+                                                   3
+                                                   4
+                                                   (1))
+                                                  ("^\\(\\(\\[[a-z]+\\]?\\)[ ]*\\)?\\(ERROR\\)\s\\(in\\|at\\)[\s\t]+\\([^ \n]+\\)[(]\\([0-9]+\\)[:,]\\([0-9]+\\)[)]$"
+                                                   5
+                                                   6
+                                                   7
+                                                   (1)))
+  "Alist that specifies how to match errors in compiler output.
+
+This is like `compilation-error-regexp-alist', but for `npmjs-compilation-mode'
+only."
+  :group 'npmjs
+  :type '(repeat (sexp :tag "Error specification")))
+
 (defvar-local npmjs--current-command nil)
 (defvar-local npmjs--current-node-version nil)
 (defvar-local npmjs-current-descriptions-alist nil)
@@ -1731,6 +1753,19 @@ nil, the current or system VERSION is used."
                                 (split-window-sensibly))
         (pop-to-buffer-same-window buffer t)))))
 
+(defun npmjs-parse-error-filename (filename)
+  "Extract FILENAME from error message, removing line and column info.
+
+Argument FILENAME is the string representing the filename to parse."
+  (let* ((end
+          (string-match-p "\\(:\\([0-9]+\\)\\)?:\\([0-9]+\\)\\'"
+                          filename))
+         (transformed (if end
+                          (substring-no-properties filename 0 end))))
+    (or transformed filename)))
+
+
+
 (defun npmjs-run-compile (command &optional buff-name env)
   "Run a compilation COMMAND using the current Node.js version.
 
@@ -1756,37 +1791,52 @@ the COMMAND; it defaults to `process-environment'."
 
 (defun npmjs-compilation-filter-hook ()
   "Apply ANSI color to compilation output."
+  (require 'ansi-color)
   (let ((inhibit-read-only t))
-    (ansi-color-apply-on-region compilation-filter-start (point-max))))
+    (ansi-color-apply-on-region compilation-filter-start
+                                (point-max))))
+
+
+(defun npmjs--compilation-after-change-watcher (beg end &rest _)
+  "Display content if it matches an error regex from a list.
+
+Argument BEG is the beginning position in the buffer where the change occurred.
+
+Argument END is the ending position in the buffer where the change occurred.
+
+Remaining arguments _ are ignored."
+  (let* ((content (buffer-substring-no-properties beg end))
+         (errored (seq-find
+                   (pcase-lambda (`(,regex . ,_rest))
+                     (and regex (string-match-p regex
+                                                content)))
+                   npmjs-compilation-error-regexp-alist)))
+    (when errored
+      (message content))))
 
 (define-derived-mode npmjs-compilation-mode compilation-mode "NPMJS"
-  "Customize NPM compilation buffer with color and truncation.
-
-Define `npmjs-compilation-mode' as a major mode derived from `compilation-mode'
-specifically tailored for handling NPM compilation buffers. Enable line
-truncation within the buffer to ensure long lines do not wrap. Apply ANSI color
-codes to the compilation output to enhance readability and distinguish between
-different types of messages. Utilize the standard compilation keymap for
-consistent navigation and interaction within the buffer. Add a custom filter
-hook to process the compilation buffer's output, applying colorization with
-`ansi-color-apply-on-region' from the point where new output begins to the end
-of the buffer."
+  "The variant of `compilation-mode' used for npmjs compilation buffers."
   (use-local-map compilation-mode-map)
   (setq-local truncate-lines nil)
+  (setq compilation-parse-errors-filename-function #'npmjs-parse-error-filename)
+  (make-local-variable 'compilation-error-regexp-alist)
+  (dolist (it npmjs-compilation-error-regexp-alist)
+    (add-to-list 'compilation-error-regexp-alist
+                 it))
+  (add-hook 'after-change-functions 'npmjs--compilation-after-change-watcher nil
+            t)
   (add-hook 'compilation-filter-hook
             #'npmjs-compilation-filter-hook nil t))
 
 ;;;###autoload
 (define-minor-mode npmjs-minor-mode
-  "Remap compile commands to npmjs functions.
+  "Remap compile commands for npm projects.
 
-Enable `npmjs-minor-mode' to override the default compile and recompile commands
-with npmjs-specific functions. Bind the `compile' command to
-`npmjs-compile-command' and the `recompile' command to
-`npmjs-repeat-compile-command'. If available, also remap
-`projectile-compile-project' and `project-compile' to `npmjs-compile-command'.
-Customize the actual commands executed by setting `npmjs-compile-command' and
-`npmjs-repeat-compile-command'."
+This minor mode remaps the standard compile and recompile commands to use
+`npmjs-compile-command' and `npmjs-repeat-compile-command', respectively.
+
+Additionally, if Projectile or project.el's compile commands are available,
+remap those to `npmjs-compile-command' as well."
   :keymap
   (let ((map (make-sparse-keymap)))
     (define-key map [remap compile]
