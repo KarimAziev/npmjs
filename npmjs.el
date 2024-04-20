@@ -3315,15 +3315,14 @@ generated keys."
   (unless value-fn (setq value-fn #'npmjs-key-builder-default-value-fn))
   (let ((min-len
          (or key-len
-             (if used-keys
-                 (length (car (seq-sort-by #'length #'> used-keys)))
-               (let ((variants-len (length (npmjs-key-builder-get-alphabet)))
-                     (total (length items)))
-                 (cond ((>= variants-len total)
-                        1)
-                       ((>= variants-len (/ total 2))
-                        2)
-                       (t 3)))))))
+             (let ((variants-len (length (npmjs-key-builder-get-alphabet)))
+                   (total (length items)))
+               (max 1 (length
+                       (car
+                        (seq-sort-by #'length
+                                     #'>
+                                     used-keys)))
+                    (ceiling (log total variants-len)))))))
     (let ((shortcuts used-keys)
           (used-words '())
           (all-keys (mapcar
