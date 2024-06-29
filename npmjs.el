@@ -3298,47 +3298,48 @@ Optional argument USED-KEYS is a list of already used keys to avoid conflicts.
 
 Optional argument KEY-LEN is an integer specifying the minimum length of the
 generated keys."
-  (unless key-fn (setq key-fn #'npmjs-key-builder-default-key-fn))
-  (unless value-fn (setq value-fn #'npmjs-key-builder-default-value-fn))
-  (let ((min-len
-         (or key-len
-             (let ((variants-len (length (npmjs-key-builder-get-alphabet)))
-                   (total (length items)))
-               (max 1 (length
-                       (car
-                        (seq-sort-by #'length
-                                     #'>
-                                     used-keys)))
-                    (ceiling (log total variants-len)))))))
-    (let ((shortcuts used-keys)
-          (used-words '())
-          (all-keys (mapcar
-                     (npmjs--compose
-                       (npmjs--cond
-                         [(npmjs--compose not
-                            (apply-partially #'string-match-p "[a-z]"))
-                          identity]
-                         [t (apply-partially #'replace-regexp-in-string
-                                             "^[^a-z]+" "")])
-                       (lambda (it)
-                         (funcall key-fn it)))
-                     items))
-          (result))
-      (dotimes (i (length items))
-        (let ((word (nth i all-keys))
-              (def (nth i items)))
-          (when-let* ((shortcut
-                       (when (not (member word used-words))
-                         (npmjs-key-builder--generate-shortcut-key
-                          word
-                          min-len
-                          shortcuts
-                          all-keys)))
-                      (value (funcall value-fn shortcut def)))
-            (setq used-words (push word used-words))
-            (setq shortcuts (push shortcut shortcuts))
-            (setq result (push value result)))))
-      (reverse result))))
+  (when items
+    (unless key-fn (setq key-fn #'npmjs-key-builder-default-key-fn))
+    (unless value-fn (setq value-fn #'npmjs-key-builder-default-value-fn))
+    (let ((min-len
+           (or key-len
+               (let ((variants-len (length (npmjs-key-builder-get-alphabet)))
+                     (total (length items)))
+                 (max 1 (length
+                         (car
+                          (seq-sort-by #'length
+                                       #'>
+                                       used-keys)))
+                      (ceiling (log total variants-len)))))))
+      (let ((shortcuts used-keys)
+            (used-words '())
+            (all-keys (mapcar
+                       (npmjs--compose
+                         (npmjs--cond
+                           [(npmjs--compose not
+                              (apply-partially #'string-match-p "[a-z]"))
+                            identity]
+                           [t (apply-partially #'replace-regexp-in-string
+                                               "^[^a-z]+" "")])
+                         (lambda (it)
+                           (funcall key-fn it)))
+                       items))
+            (result))
+        (dotimes (i (length items))
+          (let ((word (nth i all-keys))
+                (def (nth i items)))
+            (when-let* ((shortcut
+                         (when (not (member word used-words))
+                           (npmjs-key-builder--generate-shortcut-key
+                            word
+                            min-len
+                            shortcuts
+                            all-keys)))
+                        (value (funcall value-fn shortcut def)))
+              (setq used-words (push word used-words))
+              (setq shortcuts (push shortcut shortcuts))
+              (setq result (push value result)))))
+        (reverse result)))))
 
 (defun npmjs-key-builder-default-key-fn (def)
   "Generate string from symbol or return argument.
@@ -5983,7 +5984,6 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
    ("-s" "scripts" npmjs-show-scripts-man-page)
    ("-p" "package.json" npmjs-show-package-json-man-page)]
   (interactive)
-  (npmjs-get-scripts-suffixes)
   (setq npmjs-current-scripts (npmjs-get-scripts-suffixes))
   (transient-setup #'npmjs-run-script))
 
