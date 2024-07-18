@@ -1202,7 +1202,19 @@ Return the category metadatum as the type of the target."
 
 (defvar npmjs-minibuffer-targets-finders
   '(npmjs-minibuffer-ivy-selected-cand
+    npmjs--vertico-selected
     npmjs-get-minibuffer-get-default-completion))
+
+(declare-function vertico--candidate "ext:vertico")
+(declare-function vertico--update "ext:vertico")
+
+(defun npmjs--vertico-selected ()
+  "Target the currently selected item in Vertico.
+Return the category metadatum as the type of the target."
+  (when (bound-and-true-p vertico--input)
+    (vertico--update)
+    (cons (completion-metadata-get (npmjs-minibuffer-get-metadata) 'category)
+          (vertico--candidate))))
 
 (defun npmjs-minibuffer-get-current-candidate ()
   "Return cons filename for current completion candidate."
