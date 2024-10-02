@@ -1768,12 +1768,13 @@ nil, the current or system VERSION is used."
   "Extract FILENAME from error message, removing line and column info.
 
 Argument FILENAME is the string representing the filename to parse."
-  (let* ((end
-          (string-match-p "\\(:\\([0-9]+\\)\\)?:\\([0-9]+\\)\\'"
-                          filename))
-         (transformed (if end
-                          (substring-no-properties filename 0 end))))
-    (or transformed filename)))
+  (when filename
+    (let* ((end
+            (string-match-p "\\(:\\([0-9]+\\)\\)?:\\([0-9]+\\)\\'"
+                            filename))
+           (transformed (if end
+                            (substring-no-properties filename 0 end))))
+      (or transformed filename))))
 
 
 
@@ -1807,6 +1808,17 @@ the COMMAND; it defaults to `process-environment'."
     (ansi-color-apply-on-region compilation-filter-start
                                 (point-max))))
 
+(defcustom npmjs-show-compilation-errors nil
+  "Flag indicating whether to show compilation errors.
+
+A boolean flag to control the display of compilation errors.
+
+When set to t, compilation errors detected by the watcher
+function will be displayed in the message area. When set to nil,
+compilation errors will not be shown. This can be useful for
+debugging or monitoring the output of npm scripts."
+  :group 'npmjs
+  :type 'boolean)
 
 (defun npmjs--compilation-after-change-watcher (beg end &rest _)
   "Display content if it matches an error regex from a list.
@@ -1816,14 +1828,15 @@ Argument BEG is the beginning position in the buffer where the change occurred.
 Argument END is the ending position in the buffer where the change occurred.
 
 Remaining arguments _ are ignored."
-  (let* ((content (buffer-substring-no-properties beg end))
-         (errored (seq-find
-                   (pcase-lambda (`(,regex . ,_rest))
-                     (and regex (string-match-p regex
-                                                content)))
-                   npmjs-compilation-error-regexp-alist)))
-    (when errored
-      (message content))))
+  (when npmjs-show-compilation-errors
+    (let* ((content (buffer-substring-no-properties beg end))
+           (errored (seq-find
+                     (pcase-lambda (`(,regex . ,_rest))
+                       (and regex (string-match-p regex
+                                                  content)))
+                     npmjs-compilation-error-regexp-alist)))
+      (when errored
+        (message "npmjs: %s" (string-trim content))))))
 
 (define-derived-mode npmjs-compilation-mode compilation-mode "NPMJS"
   "The variant of `compilation-mode' used for npmjs compilation buffers."
@@ -1834,7 +1847,8 @@ Remaining arguments _ are ignored."
   (dolist (it npmjs-compilation-error-regexp-alist)
     (add-to-list 'compilation-error-regexp-alist
                  it))
-  (add-hook 'after-change-functions 'npmjs--compilation-after-change-watcher nil
+  (add-hook 'after-change-functions #'npmjs--compilation-after-change-watcher
+            nil
             t))
 
 ;;;###autoload
@@ -2174,10 +2188,12 @@ input.
 Optional argument INITIAL-INPUT is the initial input provided to the minibuffer.
 
 Optional argument HISTORY is the minibuffer history list to use."
-  (cond ((and (fboundp 'ivy-more-chars)
-              (fboundp 'counsel--async-command)
-              (fboundp 'ivy-read)
-              (fboundp 'counsel-delete-process))
+  (cond ((and
+          (eq 'ivy-completing-read completing-read-function)
+          (fboundp 'ivy-more-chars)
+          (fboundp 'counsel--async-command)
+          (fboundp 'ivy-read)
+          (fboundp 'counsel-delete-process))
          (npmjs-ivy-read-npm-dependency prompt initial-input history))
         (t (npmjs-search-package))))
 
