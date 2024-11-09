@@ -612,7 +612,7 @@ to the `nvm ls-remote` command."
 
 (defun npmjs-nvm-read-remote-node-version ()
   "Fetch and display Node.js versions for selection."
-  (when-let ((node-versions
+  (when-let* ((node-versions
               (or npmjs-nvm-remote-node-versions-alist
                   (setq npmjs-nvm-remote-node-versions-alist
                         (npmjs-nvm-ls-remote)))))
@@ -696,7 +696,7 @@ the current DIRECTORY if not specified."
                          npmjs-nvm-dir))))))
     (mapcan
      (lambda (it)
-       (when-let ((name
+       (when-let* ((name
                    (when (file-directory-p it)
                      (file-name-nondirectory
                       (directory-file-name
@@ -784,7 +784,7 @@ start with \"v\", \"node\", or \"iojs\"."
 
 (defun npmjs-nvm-get-nvmrc-required-node-version ()
   "Retrieve Node.js version from project's `.nvmrc' file."
-  (when-let ((nvmrc (locate-dominating-file default-directory ".nvmrc")))
+  (when-let* ((nvmrc (locate-dominating-file default-directory ".nvmrc")))
     (with-temp-buffer (insert-file-contents
                        (expand-file-name ".nvmrc" nvmrc))
                       (string-trim
@@ -820,7 +820,7 @@ start with \"v\", \"node\", or \"iojs\"."
 
 Argument VERSION is a string representing the Node.js version to get environment
 variables for."
-  (when-let ((version-path (cdr (npmjs-nvm-find-exact-version-for version))))
+  (when-let* ((version-path (cdr (npmjs-nvm-find-exact-version-for version))))
     (let* ((env-flags
             (mapcar
              (lambda (it)
@@ -962,7 +962,7 @@ installation command."
              (prog1 (npmjs-nvm-strip-prefix
                      (npmjs-nvm-read-remote-node-version))))))
      (list version targs)))
-  (when-let ((nvm-path (npmjs-nvm-path)))
+  (when-let* ((nvm-path (npmjs-nvm-path)))
     (if (member version (mapcar (lambda (it)
                                   (npmjs-nvm-strip-prefix (car it)))
                                 (npmjs-nvm--installed-versions)))
@@ -1029,8 +1029,8 @@ Argument TAG is a string specifying the version tag of nvm to install."
                   (lambda (status &rest _)
                     (unwind-protect
                         (progn
-                          (if-let ((err
-                                    (when-let ((err (plist-get status :error)))
+                          (if-let* ((err
+                                    (when-let* ((err (plist-get status :error)))
                                       (concat (propertize
                                                "npmjs-nvm error: "
                                                'face
@@ -1039,7 +1039,7 @@ Argument TAG is a string specifying the version tag of nvm to install."
                                                                           "%s")
                                                          (delq nil
                                                                (list (or
-                                                                      (when-let
+                                                                      (when-let*
                                                                           ((type
                                                                             (ignore-errors
                                                                               (cadr
@@ -1222,7 +1222,7 @@ Return the category metadatum as the type of the target."
     (run-hook-wrapped
      'npmjs-minibuffer-targets-finders
      (lambda (fun)
-       (when-let ((result (funcall fun)))
+       (when-let* ((result (funcall fun)))
          (when (and (cdr-safe result)
                     (stringp (cdr-safe result))
                     (not (string-empty-p (cdr-safe result))))
@@ -1284,7 +1284,7 @@ INHERIT-INPUT-METHOD."
       (lambda ()
         (when (minibufferp)
           (add-hook 'minibuffer-exit-hook (lambda ()
-                                            (when-let ((buffer
+                                            (when-let* ((buffer
                                                         (get-buffer
                                                          "*npmjs-nvm-release*")))
                                               (kill-buffer buffer)))
@@ -1459,12 +1459,12 @@ returned JSON; it defaults to `alist'."
 
 (defun npmjs-get-package-json-path ()
   "Find and return the path to `package.json'."
-  (when-let ((project-root (npmjs-get-project-root)))
+  (when-let* ((project-root (npmjs-get-project-root)))
     (expand-file-name "package.json" project-root)))
 
 (defun npmjs-get-package-json-alist ()
   "Fetch and parse package.json as an alist."
-  (when-let ((package-json-file (npmjs-get-package-json-path)))
+  (when-let* ((package-json-file (npmjs-get-package-json-path)))
     (ignore-errors (npmjs-read-json package-json-file
                                     'alist))))
 
@@ -1518,7 +1518,7 @@ function to call when the process exits with a non-zero status."
        proc
        (lambda (process _state)
          (let ((output
-                (when-let ((buffer (process-buffer process)))
+                (when-let* ((buffer (process-buffer process)))
                   (with-current-buffer
                       (process-buffer process)
                     (buffer-string)))))
@@ -1633,7 +1633,7 @@ arguments to be executed with nvm."
 
 Argument NPM-COMMAND is a string representing the npm command to execute
 globally."
-  (if-let ((nvm-version (npmjs-confirm-node-version)))
+  (if-let* ((nvm-version (npmjs-confirm-node-version)))
       (let ((env (npmjs-nvm-get-env-for-node
                   nvm-version))
             (nvm-path (npmjs-nvm-path)))
@@ -1904,12 +1904,12 @@ remap those to `npmjs-compile-command' as well."
 
 (defun npmjs--get-project-buffer-name ()
   "Generate a buffer name for an npm project."
-  (when-let ((name (npmjs-get-project-root)))
+  (when-let* ((name (npmjs-get-project-root)))
     (format "npmjs<%s>" (replace-regexp-in-string "^~/\\|/$" "" name))))
 
 (defun npmjs-get-project-default-directory ()
   "Retrieve and expand the path to the project root."
-  (when-let ((name (npmjs-get-project-root)))
+  (when-let* ((name (npmjs-get-project-root)))
     (expand-file-name name)))
 
 (defun npmjs--get-buffer ()
@@ -2033,7 +2033,7 @@ Remaining arguments ARGS are passed to the function FN."
             (with-selected-window buffer-window
               (apply fn args))
           (apply fn args)))
-      (when-let ((timer-value (symbol-value timer-sym)))
+      (when-let* ((timer-value (symbol-value timer-sym)))
         (when (timerp timer-value)
           (cancel-timer timer-value))))))
 (defun npmjs-cancel-timer (timer-sym)
@@ -2072,7 +2072,7 @@ Remaining arguments ARGS are passed to the function FN when it is called."
 (defun npmjs-wnd-complete ()
   "Complete npmjs search in minibuffer."
   (npmjs-abort-url-retrieve npmjs-request-buffer)
-  (when-let ((wnd (active-minibuffer-window)))
+  (when-let* ((wnd (active-minibuffer-window)))
     (with-selected-window wnd
     ;; (completion--flush-all-sorted-completions)
       (let ((text (string-trim (buffer-substring-no-properties
@@ -2221,7 +2221,7 @@ Optional argument HISTORY is the minibuffer history list to use."
 
 (defun npmjs-goto-start-of-entry ()
   "Navigate to the beginning of a list entry."
-  (when-let ((id (tabulated-list-get-id)))
+  (when-let* ((id (tabulated-list-get-id)))
     (let ((prev-id))
       (while (and
               (equal (setq prev-id (tabulated-list-get-id))
@@ -2320,7 +2320,7 @@ Optional argument N is the number of lines to move forward; it defaults to 1."
 Optional argument N is the number of lines to move forward; it defaults to 1."
   (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
       (npmjs-search-package--forward-line-0 n)
-    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+    (when-let* ((buff (get-buffer npmjs-bmenu-search-buff-name)))
       (with-current-buffer buff
         (npmjs-search-package--forward-line-0 n)))))
 
@@ -2337,7 +2337,7 @@ Optional argument N is the number of lines to move forward; it defaults to 1."
 (defun npmjs-search-package--beg-of-buffer ()
   "Move to the beginning of a buffer window."
   (interactive)
-  (when-let ((wind (get-buffer-window npmjs-bmenu-search-buff-name)))
+  (when-let* ((wind (get-buffer-window npmjs-bmenu-search-buff-name)))
     (with-selected-window wind
       (goto-char (point-min))
       (unless (tabulated-list-get-id)
@@ -2354,7 +2354,7 @@ Optional argument N is the number of lines to move forward; it defaults to 1."
             (npmjs-search-highlight-current)
           (forward-line -1)
           (npmjs-search-highlight-current)))
-    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+    (when-let* ((buff (get-buffer npmjs-bmenu-search-buff-name)))
       (with-current-buffer buff
         (progn
           (goto-char (point-max))
@@ -2369,7 +2369,7 @@ Optional argument N is the number of lines to move forward; it defaults to 1."
   (interactive)
   (if (eq npmjs-bmenu-search-buff-name (buffer-name (current-buffer)))
       (npmjs--mark-or-unmark)
-    (when-let ((buff (get-buffer npmjs-bmenu-search-buff-name)))
+    (when-let* ((buff (get-buffer npmjs-bmenu-search-buff-name)))
       (with-current-buffer buff
         (npmjs--mark-or-unmark)))))
 
@@ -2381,14 +2381,14 @@ minibuffer."
   (if (minibufferp)
       (progn (delete-minibuffer-contents)
              (insert cand))
-    (when-let ((wind (active-minibuffer-window)))
+    (when-let* ((wind (active-minibuffer-window)))
       (with-selected-window wind
         (delete-minibuffer-contents)
         (insert cand)))))
 
 (defun npmjs--mark-or-unmark ()
   "Toggle package marking for npmjs operations."
-  (when-let ((name (tabulated-list-get-id (point))))
+  (when-let* ((name (tabulated-list-get-id (point))))
     (setq npmjs--marked-packages
           (if (member name npmjs--marked-packages)
               (delete name npmjs--marked-packages)
@@ -2402,7 +2402,7 @@ minibuffer."
 Argument ARGS is a list of additional arguments to pass to the search function.
 
 Argument BUFF is the buffer where the search is performed."
-  (when-let ((input
+  (when-let* ((input
               (with-current-buffer buff
                 (use-local-map
                  (let ((map (make-sparse-keymap)))
@@ -2666,12 +2666,12 @@ Remaining arguments ARGS are strings passed as command arguments to CMD."
 Argument DIR is a string specifying the directory to search for package files."
   (when (and (file-exists-p dir)
              (file-directory-p dir))
-    (if-let ((package-json (npmjs-expand-when-exists "package.json" dir)))
+    (if-let* ((package-json (npmjs-expand-when-exists "package.json" dir)))
         (list package-json)
       (seq-reduce
        (lambda (acc it)
          (when (file-directory-p it)
-           (when-let ((found (npmjs-get-package-files it)))
+           (when-let* ((found (npmjs-get-package-files it)))
              (setq acc (nconc acc found))))
          acc)
        (directory-files dir t directory-files-no-dot-files-regexp)
@@ -2718,7 +2718,7 @@ Argument DIR is a string specifying the directory to search for package files."
 
 (defun npmjs-global-packages-from-node-modules ()
   "List global npm packages with versions from node_modules."
-  (when-let ((node-modules-path (npmjs-current-global-node-modules-path)))
+  (when-let* ((node-modules-path (npmjs-current-global-node-modules-path)))
     (mapcar
      (npmjs--compose
        (npmjs--converge
@@ -2784,8 +2784,8 @@ be a string, a symbol, or nil."
 Argument PACKAGE-JSON-ALIST is an alist representing the parsed package.json
 file."
   (seq-reduce (lambda (acc it)
-                (if-let ((deps
-                          (when-let ((found
+                (if-let* ((deps
+                          (when-let* ((found
                                       (alist-get it package-json-alist)))
                             (mapcar (lambda (cell)
                                       (let* ((symb (car cell))
@@ -2859,7 +2859,7 @@ for completion."
          (annotate-fn (lambda (it)
                         (concat " "
                                 (or
-                                 (when-let
+                                 (when-let*
                                      ((vers (cdr (assoc-string it
                                                                dist-tags))))
                                    (format "(%s)" vers))
@@ -2968,7 +2968,7 @@ history."
 
 Argument COMMAND is a string representing the name of the npm command to view
 the manual for."
-  (when-let ((files (npmjs-man-paths-files))
+  (when-let* ((files (npmjs-man-paths-files))
              (file (seq-find (lambda (it)
                                (string= command (file-name-base it)))
                              files)))
@@ -3018,7 +3018,7 @@ to nil, and the user is prompted to select a command."
                                      nil t
                                      (when transient--prefix
                                        (oref transient--prefix command)))))))
-  (when-let ((file (if (consp command)
+  (when-let* ((file (if (consp command)
                        (cdr
                         command)
                      (seq-find (lambda (it)
@@ -3045,7 +3045,7 @@ Argument FILE is a string specifying the name of the manual page to view."
          (while (and proc (eq (process-status proc) 'run))
            (sit-for 0.1 proc))
          (when (buffer-live-p buff)
-           (if-let ((wnd (or (seq-find
+           (if-let* ((wnd (or (seq-find
                               (npmjs--compose
                                 (apply-partially #'string-match-p "*Man ")
                                 buffer-name window-buffer)
@@ -3412,7 +3412,7 @@ description."
   (when (proper-list-p item)
     (if (stringp (nth 1 item))
         (nth 1 item)
-      (when-let ((d (car (seq-drop
+      (when-let* ((d (car (seq-drop
                           (memq
                            :description
                            item)
@@ -3696,7 +3696,7 @@ completion."
                                     ,longest))
                       " "))
          (annotate-fn (lambda (k)
-                        (if-let ((cell (assoc-string k alist)))
+                        (if-let* ((cell (assoc-string k alist)))
                             (if (stringp cell) ""
                               (concat fmt (truncate-string-to-width
                                            (format
@@ -4083,7 +4083,7 @@ cons cell (HISTVAR . HISTPOS)."
 
 Argument FILENAME is the name of the file for which to compute the relative
 path."
-  (if-let ((proj-root (npmjs-get-project-root)))
+  (if-let* ((proj-root (npmjs-get-project-root)))
       (file-relative-name filename proj-root)
     (file-relative-name filename default-directory)))
 
@@ -4363,7 +4363,7 @@ Argument KEYWORD is the symbol to search for in ARGS.
 Argument ARGS is a list where KEYWORD and its associated value are expected to
 be found."
   (when (listp args)
-    (when-let ((class (memq keyword args)))
+    (when-let* ((class (memq keyword args)))
       (cadr class))))
 
 (defun npmjs-eval-infix (name &optional args inhibit-eval)
@@ -4497,14 +4497,14 @@ Return an updated version of collection COLL with the KEY removed."
               (when (stringp curr)
                 (npmjs-get-long-short-option curr)))
              (longarg
-              (when-let ((arg (car longarg-parts)))
+              (when-let* ((arg (car longarg-parts)))
                 (if (or value extra-props)
                     (npmjs-ensure-option-ending arg)
                   arg)))
              (shortarg (nth 1 longarg-parts))
              (argument
               (or longarg
-                  (when-let ((plain-arg
+                  (when-let* ((plain-arg
                               (when (and
                                      (string-prefix-p "--" curr)
                                      (not (string-match-p "|" curr)))
@@ -4513,7 +4513,7 @@ Return an updated version of collection COLL with the KEY removed."
                         (npmjs-ensure-option-ending plain-arg)
                       plain-arg))))
              (res))
-        (when-let ((hint (or
+        (when-let* ((hint (or
                           (when value (npmjs-parse-hint value cmd extra-props))
                           (npmjs-parse-hint curr cmd extra-props))))
           (setq extra-props (npmjs-plist-merge extra-props hint)))
@@ -4837,7 +4837,7 @@ an optional STOP-CHAR or at the end of the buffer."
           ("{"
            (setq node (npmjs-tokenize "}")))
           ("<"
-           (when-let ((str (progn (forward-char -1)
+           (when-let* ((str (progn (forward-char -1)
                                   (npmjs-specifier-at-point))))
              (setq node
                    str)
@@ -5025,7 +5025,7 @@ Argument ITEM is a vector that will be flattened."
 
 Argument VECT is a vector that may contain subvectors."
   (or
-   (when-let ((subvect (and (vectorp vect)
+   (when-let* ((subvect (and (vectorp vect)
                             (seq-find #'vectorp vect))))
      (when (equal (npmjs-nth 0 subvect)
                   (npmjs-nth 0 vect))
@@ -5149,7 +5149,7 @@ of infixes.
 Argument VECTORS is a list of vectors to be parsed."
   (seq-reduce
    (lambda (acc it)
-     (when-let ((res (npmjs-parse-help--vector
+     (when-let* ((res (npmjs-parse-help--vector
                       it
                       cmd
                       inhibit-eval)))
@@ -5227,7 +5227,7 @@ input sequence."
                         (push (apply #'vector prev) acc))
                        (t (push (vector it) acc)))))
               ((pred symbolp)
-               (if-let ((prev (pop acc)))
+               (if-let* ((prev (pop acc)))
                    (push (apply #'vector (append prev (list it))) acc)
                  acc))
               (_ (message "unknown type %s: " it)))))
@@ -5279,7 +5279,7 @@ providing a comprehensive overview of the command's capabilities and usage."
                          (append common-options options)
                        options))))
             ("Options:"
-             (when-let ((parsed-options (seq-take-while (lambda (it)
+             (when-let* ((parsed-options (seq-take-while (lambda (it)
                                                           (string-prefix-p "["
                                                                            it))
                                                         lines)))
@@ -5310,7 +5310,7 @@ providing a comprehensive overview of the command's capabilities and usage."
                         parsed
                         (length
                          words)))))
-                 (when-let ((pos
+                 (when-let* ((pos
                              (seq-position new-options
                                            (car (member ["--"]
                                                         new-options)))))
@@ -5319,7 +5319,7 @@ providing a comprehensive overview of the command's capabilities and usage."
                        (npmjs-parse-normalized-vectors
                         subcommand-name
                         inhibit-eval new-options))
-                 (if-let ((subcommand-cell (assoc-string subcommand-name
+                 (if-let* ((subcommand-cell (assoc-string subcommand-name
                                                          subcommands)))
                      (setcdr subcommand-cell
                              (append (cdr subcommand-cell) new-options))
@@ -5521,7 +5521,7 @@ calls `npmjs-show-manual' with the value of the command's
                            (unless (npmjs-get-project-root)
                             (list "--global")))
                   :show-help (lambda (prefix)
-                               (when-let ((man-page (oref prefix command)))
+                               (when-let* ((man-page (oref prefix command)))
                                 (npmjs-show-manual (get (oref prefix command)
                                                     'man-page))))
                   ,@body)
@@ -5535,7 +5535,7 @@ calls `npmjs-show-manual' with the value of the command's
      (lambda ()
        (or
         (npmjs-get-package-json-script 'start)
-        (when-let ((proj (npmjs-get-project-root)))
+        (when-let* ((proj (npmjs-get-project-root)))
           (file-exists-p (expand-file-name "server.js" proj))))))
     ("test" :inapt-if-not
      (lambda ()
@@ -5642,7 +5642,7 @@ The function returns the modified COMMANDS list after processing."
                       name
                       (plist-get commands :subcommands)
                       (plist-get commands :description))))
-           (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
+           (if-let* ((props (cdr (assoc-string name npmjs-commands-props))))
                (append (list key name sym) props)
              (list key name sym))))
         ((and (keywordp (car-safe commands))
@@ -5653,7 +5653,7 @@ The function returns the modified COMMANDS list after processing."
                  (plist-put commands :options
                             (append
                              (npmjs-add-options-shortcuts
-                              (if-let ((extra-options
+                              (if-let* ((extra-options
                                         (cdr
                                          (assoc-string
                                           name
@@ -5668,7 +5668,7 @@ The function returns the modified COMMANDS list after processing."
                      (npmjs-eval-symb name
                                       (plist-get commands :options)
                                       (plist-get commands :description))))
-           (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
+           (if-let* ((props (cdr (assoc-string name npmjs-commands-props))))
                (append (list (plist-get commands :key) name sym) props)
              (list (plist-get commands :key) name sym))))
         ((and (keywordp (car-safe commands))
@@ -5693,7 +5693,7 @@ The function returns the modified COMMANDS list after processing."
                        (npmjs-confirm-and-run
                         "npm"
                         ,cmd)))
-           (if-let ((props (cdr (assoc-string name npmjs-commands-props))))
+           (if-let* ((props (cdr (assoc-string name npmjs-commands-props))))
                (append (list key cmd name) props)
              (list key cmd name))))
         (t (npmjs-message "unmatched commands %s" commands)
@@ -5807,7 +5807,7 @@ Optional argument HIST is the history list to use for the input."
 (defun npmjs-install-self-globally ()
   "Install current project as global dependency."
   (interactive)
-  (when-let ((proj (npmjs-get-project-root)))
+  (when-let* ((proj (npmjs-get-project-root)))
     (npmjs-nvm-with-current-node-version
      (let ((default-directory (expand-file-name proj)))
        (npmjs-run-as-comint "npm install . --global")))))
@@ -5816,7 +5816,7 @@ Optional argument HIST is the history list to use for the input."
 (defun npmjs-install-project-dependencies ()
   "Install dependencies for current project."
   (interactive)
-  (when-let ((proj (npmjs-get-project-root)))
+  (when-let* ((proj (npmjs-get-project-root)))
     (npmjs-nvm-with-current-node-version
      (let ((default-directory (expand-file-name proj)))
        (npmjs-run-as-comint (concat
@@ -5979,7 +5979,7 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
                (npmjs-show-manual "npm-run-script"))
   [:description
    (lambda ()
-     (if-let ((name (npmjs-project-display-name)))
+     (if-let* ((name (npmjs-project-display-name)))
          (format "Run script (%s)" name)
        "Run script"))
    :setup-children
@@ -6062,7 +6062,7 @@ If descriptions for the current version are found, set them as the current
 descriptions. Otherwise, set the current descriptions using the prefix spec and
 update the descriptions alist accordingly. Return the current npm version."
   (let ((npm-version (npmjs-get-npm-version)))
-    (if-let ((descriptions (cdr (assoc-string npm-version
+    (if-let* ((descriptions (cdr (assoc-string npm-version
                                               npmjs-descriptions-alist))))
         (setq npmjs-current-descriptions-alist descriptions)
       (setq npmjs-current-descriptions-alist (npmjs-get-prefix-spec))
@@ -6220,7 +6220,7 @@ update the descriptions alist accordingly. Return the current npm version."
      :description (lambda ()
                     (concat
                      "Write current node version to .nvmrc "
-                     (if-let ((dir (or
+                     (if-let* ((dir (or
                                     (locate-dominating-file default-directory
                                                             ".nvmrc")
                                     (car (npmjs-get-project-roots)))))
@@ -6453,7 +6453,7 @@ Argument OUTPUT is a string containing the Jest output to be parsed."
 (defun npmjs-jest-current-file ()
   "Return string with jest command for testing current file."
   (interactive)
-  (when-let ((file (or buffer-file-name default-directory))
+  (when-let* ((file (or buffer-file-name default-directory))
              (project-root (npmjs-get-project-default-directory)))
     (let ((path-pattern (shell-quote-argument
                          (file-relative-name file project-root)))
@@ -6477,7 +6477,7 @@ command to bypass the local cache."
   (interactive "P")
   (npmjs-nvm-with-current-node-version
    (when-let* ((jest-version
-                (when-let ((vers (npmjs-jest-version)))
+                (when-let* ((vers (npmjs-jest-version)))
                   (concat "jest@" vers)))
                (dir (npmjs-get-project-default-directory))
                (prefix
