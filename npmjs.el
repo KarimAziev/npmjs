@@ -938,7 +938,13 @@ considered."
                                   action
                                   cands
                                   str
-                                  pred))))))))
+                                  pred)))
+                             nil
+                             nil
+                             nil
+                             nil
+                             project-node)))))
+
 (defvar npmjs-node-installing nil)
 
 ;;;###autoload
