@@ -4178,10 +4178,11 @@ are allowed; it defaults to nil."
   (pcase str
     ("<command>"
      (pcase cmd
-       ("run-script" (npmjs-make-reader
-                      #'npmjs-read-script
-                      nil
-                      multi-value))))
+       ((or "run-script" "run")
+        (npmjs-make-reader
+         #'npmjs-read-script
+         nil
+         multi-value))))
     ((or "<registry>" "<url>")
      (npmjs-make-reader
       #'npmjs-url-reader nil multi-value))
@@ -5537,12 +5538,13 @@ calls `npmjs-show-manual' with the value of the command's
 (defvar npmjs-commands-props
   '(("publish" :inapt-if-not npmjs-get-project-root)
     ("run-script" :inapt-if-not npmjs-get-project-root)
+    ("run" :inapt-if-not npmjs-get-project-root)
     ("start" :inapt-if-not
      (lambda ()
        (or
         (npmjs-get-package-json-script 'start)
         (when-let* ((proj (npmjs-get-project-root)))
-          (file-exists-p (expand-file-name "server.js" proj))))))
+         (file-exists-p (expand-file-name "server.js" proj))))))
     ("test" :inapt-if-not
      (lambda ()
        (npmjs-get-package-json-script 'test)))
@@ -5552,7 +5554,8 @@ calls `npmjs-show-manual' with the value of the command's
     ("dedupe" :inapt-if-not npmjs-get-project-root)))
 
 (defvar npmjs-map-replace-commands '(("run-script" . npmjs-run-script)
-                                     ("install" . npmjs-install))
+                                     ("install" . npmjs-install)
+                                     ("run" . npmjs-run))
   "Alist of commands and predefined commands to use instead.")
 
 (defvar npmjs-extra-arguments
@@ -5934,9 +5937,10 @@ Optional argument HIST is the history list to use for the input."
   (interactive)
   (npmjs-show-manual "scripts"))
 
-(defun npmjs-get-scripts-suffixes ()
-  "Return group specification with scripts for current project.
-It is a suffixes in the same forms as expected by `transient-define-prefix'."
+(defun npmjs-get-scripts-suffixes (npm-cmd)
+  "Generate shortcuts for npm scripts using project details.
+
+Argument NPM-CMD is a string representing the npm command to be used."
   (let ((scripts (npmjs-stringify (npmjs-get-package-json-scripts)))
         (proj-name (npmjs-project-display-name))
         (dir (npmjs-get-project-default-directory)))
@@ -5946,24 +5950,24 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
      (lambda (key value)
        (let ((descr (cdr value))
              (script (car value))
-             (name (npmjs-make-symbol "npm-run" proj-name (car value))))
+             (name (npmjs-make-symbol "npm" npm-cmd proj-name (car value))))
          (funcall #'fset name
                   `(lambda ()
                      ,(format "Run script %s in %s." script dir)
                      (interactive)
                      (let ((default-directory ,dir))
-                       (if npmjs-use-comint-in-scripts
-                           (npmjs-confirm-and-run
-                            "npm"
-                            "run-script"
-                            ,script
-                            (npmjs-get-formatted-transient-args))
-                         (npmjs-run-compile
-                          (npmjs-confirm-command
+                      (if npmjs-use-comint-in-scripts
+                          (npmjs-confirm-and-run
                            "npm"
-                           "run-script"
+                           ,npm-cmd
                            ,script
-                           (npmjs-get-formatted-transient-args)))))))
+                           (npmjs-get-formatted-transient-args))
+                        (npmjs-run-compile
+                         (npmjs-confirm-command
+                          "npm"
+                          ,npm-cmd
+                          ,script
+                          (npmjs-get-formatted-transient-args)))))))
          (list key name :description `(lambda ()
                                         (concat
                                          ,script
@@ -5978,51 +5982,74 @@ It is a suffixes in the same forms as expected by `transient-define-prefix'."
 (defvar-local npmjs-current-scripts nil)
 
 
-;;;###autoload (autoload 'npmjs-run-script "npmjs" nil t)
-(transient-define-prefix npmjs-run-script ()
-  "Run arbitrary package scripts."
-  :show-help (lambda (&rest _)
-               (npmjs-show-manual "npm-run-script"))
-  [:description
-   (lambda ()
-     (if-let* ((name (npmjs-project-display-name)))
-         (format "Run script (%s)" name)
-       "Run script"))
-   :setup-children
-   (lambda (&rest _args)
-     (mapcar
-      (apply-partially #'transient-parse-suffix (oref transient--prefix command))
-      npmjs-current-scripts))
-   :class transient-column]
-  ["Options"
-   :class transient-column
-   :setup-children
-   (lambda (&rest _args)
-     (npmjs-nvm-with-current-node-version
-      (npmjs-setup-npm)
-      (let* ((props
-              (npmjs-map-command-cell-lines
-               (assoc-string "run-script"
-                             (cdr
-                              npmjs-current-descriptions-alist))))
-             (options (npmjs-add-options-shortcuts
-                       (plist-get props :options)
-                       (mapcar #'car npmjs-current-scripts)))
-             (children (append options
-                               npmjs-options-suffixes)))
-        (mapcar
-         (apply-partially #'transient-parse-suffix
-                          (oref transient--prefix command))
-         children))))]
-  ["Help"
-   ("-s" "scripts" npmjs-show-scripts-man-page)
-   ("-p" "package.json" npmjs-show-package-json-man-page)]
-  (interactive)
-  (setq npmjs-current-scripts (npmjs-get-scripts-suffixes))
-  (transient-setup #'npmjs-run-script))
+(defmacro npmjs--define-run-script-prefix (prefix-name cmd-str)
+  "Define a transient prefix command for running npm scripts.
 
-(put 'npmjs-run-script 'npm-description "Install packages")
-(put 'npmjs-run-script 'npm-command "run-script")
+Argument PREFIX-NAME is a symbol representing the name of the prefix command.
+
+Argument CMD-STR is a string representing the npm command to be executed."
+  (let ((descr-sym (make-symbol "descr")))
+    `(eval-and-compile
+       (let ((,descr-sym ,(mapconcat #'capitalize
+                           (split-string cmd-str) "\s")))
+        ,(macroexpand `(transient-define-prefix ,prefix-name ()
+                         "Run arbitrary package scripts."
+                         :show-help (lambda (&rest _)
+                                      (npmjs-show-manual
+                                       ,(concat "npm-" cmd-str)))
+                         [:description
+                          (lambda ()
+                            (if-let* ((name (npmjs-project-display-name)))
+                                (format
+                                 "%s (%s)"
+                                 ,descr-sym
+                                 name)
+                              ,descr-sym))
+                          :setup-children
+                          (lambda (&rest _args)
+                            (mapcar
+                             (apply-partially
+                              #'transient-parse-suffix
+                              (oref transient--prefix
+                               command))
+                             npmjs-current-scripts))
+                          :class transient-column]
+                         ["Options"
+                          :class transient-column
+                          :setup-children
+                          (lambda (&rest _args)
+                            (npmjs-nvm-with-current-node-version
+                             (npmjs-setup-npm)
+                             (let* ((props
+                                     (npmjs-map-command-cell-lines
+                                      (assoc-string ,cmd-str
+                                       (cdr
+                                        npmjs-current-descriptions-alist))))
+                                    (options
+                                     (npmjs-add-options-shortcuts
+                                      (plist-get props :options)
+                                      (mapcar #'car npmjs-current-scripts)))
+                                    (children (append options
+                                               npmjs-options-suffixes)))
+                              (mapcar
+                               (apply-partially #'transient-parse-suffix
+                                (oref transient--prefix command))
+                               children))))]
+                         ["Help"
+                          ("-s" "scripts" npmjs-show-scripts-man-page)
+                          ("-p" "package.json" npmjs-show-package-json-man-page)]
+                         (interactive)
+                         (setq npmjs-current-scripts (npmjs-get-scripts-suffixes
+                                                      ,cmd-str))
+                         (transient-setup #',prefix-name)))
+        (put ',prefix-name 'npm-description ,descr-sym)
+        (put ',prefix-name 'npm-command ,cmd-str)))))
+
+
+(npmjs--define-run-script-prefix npmjs-run "run")
+(npmjs--define-run-script-prefix npmjs-run-script "run-script")
+
+
 
 (defvar npmjs-evaluated-commands (make-hash-table :test 'equal)
   "Hash table of npm versions and corresponding evaluated prefix commands.")
