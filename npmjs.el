@@ -3350,11 +3350,14 @@ generated keys."
             (all-keys (mapcar
                        (npmjs--compose
                          (npmjs--cond
+                           [(npmjs--compose not stringp) identity]
                            [(npmjs--compose not
-                              (apply-partially #'string-match-p "[a-z]"))
+                              (apply-partially #'string-match-p
+                                               "[a-z]"))
                             identity]
-                           [t (apply-partially #'replace-regexp-in-string
-                                               "^[^a-z]+" "")])
+                           [t (apply-partially
+                               #'replace-regexp-in-string
+                               "^[^a-z]+" "")])
                          (lambda (it)
                            (funcall key-fn it)))
                        items))
@@ -3363,7 +3366,8 @@ generated keys."
           (let ((word (nth i all-keys))
                 (def (nth i items)))
             (when-let* ((shortcut
-                         (when (not (member word used-words))
+                         (when (and word
+                                    (not (member word used-words)))
                            (npmjs-key-builder--generate-shortcut-key
                             word
                             min-len
