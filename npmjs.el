@@ -42,6 +42,7 @@
 (defvar json-false)
 
 (declare-function json-read-from-string  "json")
+(declare-function json-read "json")
 
 (defcustom npmjs-nvm-dir (or (getenv "NVM_DIR")
                              (expand-file-name "~/.nvm"))
@@ -2558,7 +2559,7 @@ false; defaults to :false."
           (json-false (or false-object :false)))
       (json-read-from-string str))))
 
-(declare-function json-read "json")
+
 (defun npmjs-json-read-buffer (&optional object-type array-type null-object
                                          false-object)
   "Parse JSON from buffer using specified types.
@@ -2596,7 +2597,6 @@ false value. It defaults to `:false'."
           (json-false (or false-object :false)))
       (json-read))))
 
-(declare-function json-read "json")
 
 (defun npmjs-json-read-file (file &optional object-type array-type null-object
                                   false-object)
@@ -3067,75 +3067,123 @@ Argument FILE is a string specifying the name of the manual page to view."
          (unless (active-minibuffer-window)
            (select-window (get-buffer-window buff))))))))
 
-(defun npmjs-get-man-paths (&optional force)
-  "Retrieve or update npm man page paths.
+(defvar Man-man-k-flags)
+(defvar Man-man-k-use-anchor)
+(defvar Man-completion-cache)
 
-Optional argument FORCE is a boolean; when non-nil, it forces the function to
-recalculate the man paths."
+(declare-function Man-completion-table "man")
+
+(defun npmjs--node-man-paths (&optional force)
+  "Return cached Node man paths, refreshing them when FORCE is non-nil.
+
+Optional argument FORCE is a boolean flag defaulting to nil; non-nil
+forces recomputation of cached Node.js man paths."
   (or (and (not force)
            npmjs-man-paths)
       (setq npmjs-man-paths
-            (let* ((files (seq-filter
-                           #'file-directory-p
-                           (mapcar
-                            #'directory-file-name
-                            (directory-files-recursively
-                             (cdr
-                              (assoc
-                               (string-trim
-                                (shell-command-to-string
-                                 "node -v"))
-                               (npmjs-nvm--installed-versions)))
-                             "\\_<\\(man\\)\\_>"
-                             t))))
-                   (mpath (string-join (append (if (getenv "MANPATH")
-                                                   (list (getenv "MANPATH"))
-                                                 (process-lines "manpath"))
-                                               (list (string-join
-                                                      files
-                                                      path-separator)))
-                                       path-separator)))
+            (let* ((files (directory-files-recursively
+                           (cdr
+                            (assoc
+                             (string-trim
+                              (shell-command-to-string
+                               "node -v"))
+                             (npmjs-nvm--installed-versions)))
+                           "\\`man\\'"
+                           t
+                           #'file-directory-p))
+                   (mpath (string-join
+                           files
+                           path-separator)))
               mpath))))
+
+(defmacro npmjs--with-current-node-manpath (&rest body)
+  "Run BODY with current Node version and MANPATH set to Node man paths.
+
+Remaining arguments BODY are forms evaluated with MANPATH set to
+the current Node.js man paths, defaults to nil."
+  `(npmjs-nvm-with-current-node-version
+    (with-environment-variables
+        (("MANPATH"
+          (npmjs--node-man-paths t)))
+      ,@body)))
+
+(defvar npmjs--node-man-entries nil)
 
 ;;;###autoload
 (defun npmjs-man-advice (&optional fn &rest args)
-  "Display Node.js manual pages using `man'.
+  "Complete and open man entries, including current Node man pages.
 
-Optional argument FN is a function to call instead of `man'.
+Optional argument FN is a function used to display manual entries.
 
-Remaining arguments ARGS are strings passed as command arguments to FN or
-`man'."
+Remaining arguments ARGS are passed unchanged to FN, or to `man' when
+FN is nil.
+
+Can be used as a standalone command and as `man' advice:
+
+\\=(advice-add\\='man :around \\=#'npmjs-man-advice)."
   (interactive)
+  (require 'man)
   (if args
-      (apply (or fn #'man) args)
-    (let ((prefix "^"))
-      (npmjs-nvm-with-current-node-version
-       (with-temp-buffer
-         (let ((default-directory "/")
-               (entries))
-           (with-environment-variables (("MANPATH" (npmjs-get-man-paths t))
-                                        ("COLUMNS" "999"))
-             (when (eq 0 (ignore-errors
-                           (call-process
-                            "mandb" nil '(t nil) nil
-                            "-c")))
-               (delete-region (point-min)
-                              (point-max))
-               (ignore-errors (call-process
-                               manual-program nil '(t nil) nil
-                               "-k" (concat
-                                     (when (or
-                                            (string-equal prefix ""))
-                                       "^")
-                                     prefix)))
-               (setq entries (split-string (buffer-string) "\n")))
-             (let* ((entry (completing-read "Candidates: "
-                                            entries))
-                    (result (with-temp-buffer (insert entry)
-                                              (when (fboundp 'Man-parse-man-k)
-                                                (car (Man-parse-man-k))))))
-               (apply (or fn 'man)
-                      (list result))))))))))
+      (progn
+        (if (member (car args) npmjs--node-man-entries)
+            (npmjs--with-current-node-manpath
+                (apply (or fn #'man) args))
+          (apply (or fn #'man) args)))
+    (let* ((prefix "")
+           (initial-entries (progn
+                              (Man-completion-table prefix nil nil)
+                              (cdr Man-completion-cache)))
+           (node-entries (setq npmjs--node-man-entries
+                               (npmjs--with-current-node-manpath
+                                   (let (Man-completion-cache)
+                                     (Man-completion-table prefix nil nil)
+                                     (cdr Man-completion-cache)))))
+           (entries (append initial-entries node-entries))
+           (annotf (lambda (str)
+                     (let ((val
+                            (get-text-property 0 'help-echo str)))
+                       (and val
+                            (concat
+                             (propertize " " 'display (list
+                                                       'space
+                                                       :align-to 80))
+                             val)))))
+           (default-entry (if (fboundp 'Man-default-man-entry)
+                              (Man-default-man-entry)
+                            (when-let* ((sym (symbol-at-point)))
+                              (symbol-name sym))))
+           (entry
+            (completing-read (or
+                              (and
+                               default-entry
+                               (not (string-empty-p default-entry))
+                               (member default-entry entries)
+                               (fboundp 'format-prompt)
+                               (format-prompt "Manual entry"
+                                              (and (not (equal default-entry
+                                                               ""))
+                                                   default-entry)))
+                              "Manual entry: ")
+                             (lambda (str pred action)
+                               (if (eq action 'metadata)
+                                   `(metadata
+                                     (annotation-function . ,annotf))
+                                 (complete-with-action action
+                                                       entries
+                                                       str pred)))))
+           (result (with-temp-buffer
+                     (insert entry)
+                     (when (fboundp 'Man-parse-man-k)
+                       (car (Man-parse-man-k)))))
+           (exists (and (member result node-entries)
+                        t)))
+      (setq npmjs--node-man-entries node-entries)
+      (if exists
+          (npmjs--with-current-node-manpath
+              (apply (or fn 'man)
+                     (list result)))
+        (apply (or fn 'man)
+               (list result))))))
 
 ;; transient
 (defun npmjs-key-builder-shared-start (s1 s2)
