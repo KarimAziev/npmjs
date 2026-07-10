@@ -95,20 +95,7 @@ accordingly."
   "The URL to download the nvm installation script.
 
 Specifies the URL from which the Node Version Manager (nvm) install script
-should be downloaded.
-
-This should be a STRING representing a valid URL pointing to the nvm install
-script.
-
-Changing this value is useful for directing the download process to a different
-version of nvm or to a forked repository.
-
-Ensure that the provided URL is accessible and points to a legitimate nvm
-install script.
-
-The default value points to the official nvm install script for version v0.39.3.
-To apply changes to this variable, use the `customize-set-variable' function or
-set it directly in an Emacs Lisp file."
+should be downloaded."
   :type 'string
   :group 'npmjs)
 
