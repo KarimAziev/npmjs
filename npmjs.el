@@ -91,7 +91,7 @@ accordingly."
   :group 'npmjs
   :type 'boolean)
 
-(defcustom npmjs-nvm-download-url "https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh"
+(defcustom npmjs-nvm-download-url "https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.5/install.sh"
   "The URL to download the nvm installation script.
 
 Specifies the URL from which the Node Version Manager (nvm) install script
