@@ -42,6 +42,7 @@
 (defvar json-false)
 
 (declare-function json-read-from-string  "json")
+(declare-function json-read "json")
 
 (defcustom npmjs-nvm-dir (or (getenv "NVM_DIR")
                              (expand-file-name "~/.nvm"))
@@ -2558,7 +2559,7 @@ false; defaults to :false."
           (json-false (or false-object :false)))
       (json-read-from-string str))))
 
-(declare-function json-read "json")
+
 (defun npmjs-json-read-buffer (&optional object-type array-type null-object
                                          false-object)
   "Parse JSON from buffer using specified types.
@@ -2595,8 +2596,6 @@ false value. It defaults to `:false'."
           (json-null (or null-object :null))
           (json-false (or false-object :false)))
       (json-read))))
-
-(declare-function json-read "json")
 
 (defun npmjs-json-read-file (file &optional object-type array-type null-object
                                   false-object)
